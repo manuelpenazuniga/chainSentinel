@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+.DS_Store?
+._*
+
+# Node
+node_modules/
+.env
+.env.local
+
+# Foundry
+contracts/out/
+contracts/cache/
+
+# Build
+dist/
+build/
+.next/
