@@ -21,7 +21,7 @@ Billions of dollars are lost every year to DeFi exploits. Polkadot Hub launched 
 ChainSentinel operates as a guardian that users assign to their vault. The agent watches every block, scores threats using a dual-layer detection engine, and triggers emergency withdrawals when a real threat is identified. Funds always go to the user's own safe address, never to the agent.
 
 ```
-<image src="img/diagram_cs.png" alt="How It Works chainSentinel">
+<image src="/img/diagram_cs.png" alt="How It Works chainSentinel">
 ```
 
 ### Threat Detection Engine
