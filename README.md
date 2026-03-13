@@ -130,7 +130,8 @@ chainsentinel/
 │   └── simulate-attack.ts    # Attack simulator for demos
 └── docs/
 ```
-[
+
+<!--
 ## Getting Started
 
 ### Prerequisites
@@ -168,6 +169,7 @@ npm run start
 # Start the dashboard
 cd ../frontend && npm install && npm run dev
 ```
+-->
 
 ## Why Polkadot Hub
 
