@@ -130,7 +130,7 @@ chainsentinel/
 │   └── simulate-attack.ts    # Attack simulator for demos
 └── docs/
 ```
-
+[
 ## Getting Started
 
 ### Prerequisites
@@ -177,14 +177,15 @@ ChainSentinel is built specifically for this ecosystem because security tooling 
 
 ## Roadmap
 
-- [x]  Dual-layer threat detection engine
-- [x]  SentinelVault with guardian pattern
-- [x]  SentinelRegistry for community threat data
-- [x]  Real-time dashboard with threat feed
+- [ ]  Dual-layer threat detection engine
+- [ ]  SentinelVault with guardian pattern
+- [ ]  SentinelRegistry for community threat data
+- [ ]  Real-time dashboard with threat feed
 - [ ]  Insurance pool for community-funded coverage
 - [ ]  XCM integration for cross-chain monitoring
 - [ ]  Additional detection patterns (governance attacks, MEV)
 - [ ]  PAL integration for ecosystem-wide protection
+
 
 ## License
 
