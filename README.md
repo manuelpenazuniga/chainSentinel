@@ -1,3 +1,5 @@
+<image src="/img/logo_cS.jpg" alt="chainSentinel">
+
 # ChainSentinel
 
 **Autonomous AI Security Agent for DeFi on Polkadot Hub**
@@ -19,24 +21,7 @@ Billions of dollars are lost every year to DeFi exploits. Polkadot Hub launched 
 ChainSentinel operates as a guardian that users assign to their vault. The agent watches every block, scores threats using a dual-layer detection engine, and triggers emergency withdrawals when a real threat is identified. Funds always go to the user's own safe address, never to the agent.
 
 ```
-User deposits into SentinelVault
-        │
-        ▼
-AI Agent monitors new blocks via WebSocket
-        │
-        ▼
-Layer 1: Heuristic rules (~10ms)
-Filter 95% of normal transactions
-        │
-        ▼  (score > 30)
-Layer 2: LLM analysis via Claude API (~1-3s)
-Contextual reasoning on suspicious transactions
-        │
-        ▼  (final score > threshold)
-Emergency withdraw executed on-chain
-Funds sent to user's safe address
-Threat reported to SentinelRegistry
-User notified via Telegram/Discord
+<image src="img/diagram_cs.png" alt="How It Works chainSentinel">
 ```
 
 ### Threat Detection Engine
