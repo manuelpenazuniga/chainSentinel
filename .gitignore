@@ -1,5 +1,7 @@
 # Claude
 CLAUDE.md
+technical-spec2.md
+progress.md
 
 # macOS
 .DS_Store
@@ -14,6 +16,14 @@ node_modules/
 # Foundry
 contracts/out/
 contracts/cache/
+contracts/broadcast/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
 
 # Build
 dist/
