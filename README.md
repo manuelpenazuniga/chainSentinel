@@ -98,7 +98,7 @@ A public, community-driven threat registry:
 |Smart Contracts|Solidity ^0.8.20, Foundry, OpenZeppelin v5, REVM on Polkadot Hub|
 |AI Agent|Node.js/TypeScript, LangChain.js, Polkadot Agent Kit, ethers.js v6|
 |LLM|Claude API (claude-sonnet-4-20250514)|
-|Frontend|Next.js 14, TailwindCSS, Recharts, wagmi + viem|
+|Frontend|Next.js 16, TailwindCSS v4, Recharts, wagmi v3 + viem|
 |Notifications|Telegram Bot API, Discord Webhooks|
 |Testnet|Paseo Hub (Chain ID: 420420417)|
 
@@ -106,32 +106,35 @@ A public, community-driven threat registry:
 
 ```
 chainsentinel/
-├── contracts/
+├── contracts/                  # Solidity smart contracts (Foundry)
 │   ├── src/
-│   │   ├── SentinelVault.sol
-│   │   └── SentinelRegistry.sol
-│   ├── test/
-│   └── script/
-├── agent/
-│   └── src/
-│       ├── index.ts          # Orchestrator
-│       ├── monitor.ts        # WebSocket block listener
-│       ├── analyzer.ts       # Dual-layer threat scoring
-│       ├── executor.ts       # On-chain emergency actions
-│       ├── alerter.ts        # Notification dispatch
-│       ├── context.ts        # Local state manager
-│       ├── heuristics.ts     # Rule definitions
-│       ├── llm.ts            # Claude API integration
-│       └── agentkit.ts       # Polkadot Agent Kit wrapper
-├── frontend/
-│   ├── app/
-│   └── components/
+│   │   ├── SentinelVault.sol       # Protected vault with guardian pattern
+│   │   ├── SentinelRegistry.sol    # Community threat registry
+│   │   └── MockERC20.sol           # Test token for multi-token demos
+│   ├── test/                       # 48 Foundry tests
+│   └── script/                     # Deployment scripts
+├── agent/                      # AI Agent (TypeScript)
+│   ├── src/
+│   │   ├── index.ts                # Entry point & orchestrator
+│   │   ├── monitor.ts              # WebSocket block listener
+│   │   ├── analyzer.ts             # Dual-layer threat scoring
+│   │   ├── executor.ts             # On-chain emergency actions
+│   │   ├── alerter.ts              # Telegram notifications
+│   │   ├── context.ts              # Local state manager
+│   │   ├── heuristics.ts           # 8 heuristic rule definitions
+│   │   ├── llm.ts                  # Claude API integration
+│   │   ├── agentkit.ts             # Polkadot Agent Kit wrapper
+│   │   └── types.ts                # Shared interfaces
+│   └── test/                       # 9 agent tests (Vitest)
+├── frontend/                   # Next.js 16 Dashboard
+│   ├── app/                        # 3 pages (dashboard, protect, registry)
+│   ├── components/                 # 9 components (charts, forms, feeds)
+│   └── lib/                        # Chain config, ABIs, wagmi setup
 ├── scripts/
-│   └── simulate-attack.ts    # Attack simulator for demos
-└── docs/
+│   └── simulate-attack.ts         # Attack simulator for demos
+└── .env.example                    # Environment variable template
 ```
 
-<!--
 ## Getting Started
 
 ### Prerequisites
@@ -139,37 +142,84 @@ chainsentinel/
 - Node.js v22+
 - Foundry (forge, cast, anvil)
 - MetaMask configured for Paseo Hub testnet
-- Anthropic API key
+- Anthropic API key (for Claude LLM analysis)
 
 ### Setup
 
-bash
-
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/chainsentinel.git
-cd chainsentinel
+git clone https://github.com/manuelpenazuniga/chainSentinel.git
+cd chainSentinel
 
-# Install contract dependencies
-cd contracts && forge install
-
-# Deploy to Paseo testnet
-forge script script/DeployVault.s.sol --rpc-url https://services.polkadothub-rpc.com/testnet --broadcast
-
-# Install agent dependencies
-cd ../agent && npm install
+# Install contract dependencies and run tests
+cd contracts && forge install && forge test
 
 # Configure environment
-cp .env.example .env
-# Edit .env with your keys
+cd .. && cp .env.example .env
+# Edit .env with your private keys, API key, and contract addresses
 
-# Start the agent
-npm run start
+# Deploy contracts to Paseo Hub testnet
+cd contracts
+forge script script/DeployVault.s.sol --rpc-url https://services.polkadothub-rpc.com/testnet --broadcast -vvv
+forge script script/DeployRegistry.s.sol --rpc-url https://services.polkadothub-rpc.com/testnet --broadcast -vvv
 
-# Start the dashboard
+# Set up the guardian (AI agent) on the vault
+cast send $VAULT_ADDRESS "setGuardian(address)" $AGENT_ADDRESS \
+  --rpc-url https://services.polkadothub-rpc.com/testnet \
+  --private-key $DEPLOYER_PRIVATE_KEY
+
+# Install and start the AI agent
+cd ../agent && npm install && npm run start
+
+# Install and start the dashboard
 cd ../frontend && npm install && npm run dev
 ```
--->
+
+### Testnet Configuration (MetaMask)
+
+| Field | Value |
+|---|---|
+| Network Name | Polkadot Hub TestNet |
+| RPC URL | `https://services.polkadothub-rpc.com/testnet` |
+| Chain ID | 420420417 |
+| Currency Symbol | PAS |
+| Block Explorer | `https://blockscout-passet-hub.parity-testnet.parity.io` |
+
+Get testnet PAS from [faucet.polkadot.io](https://faucet.polkadot.io/) — select **"Hub (smart contracts)"** as the chain.
+
+## Testing
+
+```bash
+# Smart contract tests (48 tests)
+cd contracts && forge test -v
+
+# AI agent tests (9 tests)
+cd agent && npx vitest run
+
+# Agent type-check
+cd agent && npx tsc --noEmit
+
+# Frontend build verification
+cd frontend && npm run build
+```
+
+## Demo
+
+ChainSentinel includes a built-in attack simulation script for demonstrating the full protection flow:
+
+```bash
+# Terminal 1: Start the AI agent
+cd agent && npm run start
+
+# Terminal 2: Run the attack simulator
+npx tsx scripts/simulate-attack.ts
+
+# Terminal 3: Watch the dashboard
+cd frontend && npm run dev
+# Open http://localhost:3000
+```
+
+The simulator sends suspicious transactions that trigger the agent's threat detection. When the score exceeds the threshold (default: 80), the agent automatically executes an emergency withdrawal, moving funds to the owner's safe address before the simulated attack can complete.
 
 ## Why Polkadot Hub
 
@@ -179,10 +229,12 @@ ChainSentinel is built specifically for this ecosystem because security tooling 
 
 ## Roadmap
 
-- [ ]  Dual-layer threat detection engine
-- [ ]  SentinelVault with guardian pattern
-- [ ]  SentinelRegistry for community threat data
-- [ ]  Real-time dashboard with threat feed
+- [x]  Dual-layer threat detection engine (heuristics + Claude LLM)
+- [x]  SentinelVault with guardian pattern (native + ERC-20)
+- [x]  SentinelRegistry for community threat data
+- [x]  Real-time dashboard with threat feed and protection score
+- [x]  Telegram alert notifications
+- [x]  Attack simulation script for demos
 - [ ]  Insurance pool for community-funded coverage
 - [ ]  XCM integration for cross-chain monitoring
 - [ ]  Additional detection patterns (governance attacks, MEV)
