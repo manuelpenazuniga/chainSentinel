@@ -33,13 +33,13 @@ export async function analyzeTransaction(
   }
 
   // Layer 2: LLM Analysis (only if heuristic score > threshold)
-  if (heuristicResult.score > config.heuristicThreshold) {
+  if (heuristicResult.score >= config.heuristicThreshold) {
     try {
       const llmAnalysis = await analyzeThreatWithLLM(
         tx,
         heuristicResult,
         context,
-        config.claudeApiKey,
+        config.geminiApiKey,
         config.llmTimeoutMs
       );
 

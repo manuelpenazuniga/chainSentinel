@@ -55,6 +55,10 @@ export const HEURISTIC_RULES: HeuristicRule[] = [
       if (tx.input.length < 10) return false;
       const selector = tx.input.slice(0, 10);
       if (!WITHDRAWAL_SELECTORS.includes(selector)) return false;
+      // For withdraw() calls, tx.value is 0 (funds flow from contract to caller).
+      // Check contract balance instead — a withdraw from a well-funded contract is notable.
+      const contractBalance = ctx.getBalance(tx.to);
+      if (contractBalance > 0n) return true;
       return BigInt(tx.value) > ctx.getSignificantThreshold(tx.to);
     },
   },

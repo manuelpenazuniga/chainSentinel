@@ -36,7 +36,7 @@ ChainSentinel operates as a guardian that users assign to their vault. The agent
 - Blacklisted address interaction
 - Unknown high-value senders
 
-**Layer 2 (LLM Analysis):** Only triggered for pre-filtered transactions. Claude API analyzes full context, identifies attack patterns, assigns a confidence-weighted threat score, and explains its reasoning in structured output.
+**Layer 2 (LLM Analysis):** Only triggered for pre-filtered transactions. Gemini API analyzes full context, identifies attack patterns, assigns a confidence-weighted threat score, and explains its reasoning in structured output.
 
 **Final score:** `(heuristic × 0.4) + (LLM × 0.6)`, adjusted by LLM confidence.
 
@@ -60,7 +60,7 @@ ChainSentinel operates as a guardian that users assign to their vault. The agent
 │  Monitor → Analyzer → Executor → Alerter      │
 │                                               │
 │  Polkadot Agent Kit + LangChain ReAct Agent   │
-│  Claude API for threat analysis               │
+│  Gemini API for threat analysis               │
 └──────────────┬───────────────────────────────┘
                │
 ┌──────────────▼───────────────────────────────┐
@@ -97,7 +97,7 @@ A public, community-driven threat registry:
 |---|---|
 |Smart Contracts|Solidity ^0.8.20, Foundry, OpenZeppelin v5, REVM on Polkadot Hub|
 |AI Agent|Node.js/TypeScript, LangChain.js, Polkadot Agent Kit, ethers.js v6|
-|LLM|Claude API (claude-sonnet-4-20250514)|
+|LLM|Google Gemini API (gemini-2.5-flash)|
 |Frontend|Next.js 16, TailwindCSS v4, Recharts, wagmi v3 + viem|
 |Notifications|Telegram Bot API, Discord Webhooks|
 |Testnet|Paseo Hub (Chain ID: 420420417)|
@@ -110,19 +110,20 @@ chainsentinel/
 │   ├── src/
 │   │   ├── SentinelVault.sol       # Protected vault with guardian pattern
 │   │   ├── SentinelRegistry.sol    # Community threat registry
-│   │   └── MockERC20.sol           # Test token for multi-token demos
+│   │   ├── MockERC20.sol            # Test token for multi-token demos
+│   │   └── DummyDeFi.sol            # Simulated DeFi protocol for attack demos
 │   ├── test/                       # 48 Foundry tests
 │   └── script/                     # Deployment scripts
 ├── agent/                      # AI Agent (TypeScript)
 │   ├── src/
 │   │   ├── index.ts                # Entry point & orchestrator
-│   │   ├── monitor.ts              # WebSocket block listener
+│   │   ├── monitor.ts              # HTTP polling block monitor
 │   │   ├── analyzer.ts             # Dual-layer threat scoring
 │   │   ├── executor.ts             # On-chain emergency actions
 │   │   ├── alerter.ts              # Telegram notifications
 │   │   ├── context.ts              # Local state manager
 │   │   ├── heuristics.ts           # 8 heuristic rule definitions
-│   │   ├── llm.ts                  # Claude API integration
+│   │   ├── llm.ts                  # Gemini API integration
 │   │   ├── agentkit.ts             # Polkadot Agent Kit wrapper
 │   │   └── types.ts                # Shared interfaces
 │   └── test/                       # 9 agent tests (Vitest)
@@ -142,7 +143,7 @@ chainsentinel/
 - Node.js v22+
 - Foundry (forge, cast, anvil)
 - MetaMask configured for Paseo Hub testnet
-- Anthropic API key (for Claude LLM analysis)
+- Google Gemini API key (free at [aistudio.google.com](https://aistudio.google.com/apikey))
 
 ### Setup
 
@@ -205,21 +206,31 @@ cd frontend && npm run build
 
 ## Demo
 
-ChainSentinel includes a built-in attack simulation script for demonstrating the full protection flow:
+ChainSentinel includes a multi-phase attack simulation that demonstrates the full protection flow:
 
 ```bash
 # Terminal 1: Start the AI agent
-cd agent && npm run start
+cd agent && set -a && source ../.env && set +a && npm run start
 
 # Terminal 2: Run the attack simulator
-npx tsx scripts/simulate-attack.ts
+cd chainSentinel && set -a && source .env && set +a
+NODE_PATH=./agent/node_modules npx tsx scripts/simulate-attack.ts
 
 # Terminal 3: Watch the dashboard
 cd frontend && npm run dev
 # Open http://localhost:3000
 ```
 
-The simulator sends suspicious transactions that trigger the agent's threat detection. When the score exceeds the threshold (default: 80), the agent automatically executes an emergency withdrawal, moving funds to the owner's safe address before the simulated attack can complete.
+The simulator deploys a DummyDeFi contract and runs 4 phases:
+
+| Phase | Attack Pattern | Expected Score | Agent Response |
+|---|---|---|---|
+| 0 — Seed | 10 small normal transactions | 0 | Builds baseline history |
+| 1 — Burst + Anomaly | 6 rapid high-value txs (500x avg) | ~65 | LLM analysis triggered |
+| 2 — Flash Loan | flashLoan() selector call | ~70 | LLM + Registry report |
+| 3 — Critical | Rapid withdrawals + burst + anomaly | ~85 | Emergency withdrawal executed |
+
+When the score exceeds the threshold (default: 80), the agent automatically executes an emergency withdrawal, moving funds to the owner's safe address before the simulated attack can complete. Threat reports are visible in the frontend's Registry page.
 
 ## Why Polkadot Hub
 
@@ -229,12 +240,13 @@ ChainSentinel is built specifically for this ecosystem because security tooling 
 
 ## Roadmap
 
-- [x]  Dual-layer threat detection engine (heuristics + Claude LLM)
+- [x]  Dual-layer threat detection engine (heuristics + Gemini LLM)
 - [x]  SentinelVault with guardian pattern (native + ERC-20)
 - [x]  SentinelRegistry for community threat data
 - [x]  Real-time dashboard with threat feed and protection score
 - [x]  Telegram alert notifications
-- [x]  Attack simulation script for demos
+- [x]  Multi-phase attack simulation with DummyDeFi contract
+- [x]  Deployed and tested on Paseo Hub Testnet (E2E verified)
 - [ ]  Insurance pool for community-funded coverage
 - [ ]  XCM integration for cross-chain monitoring
 - [ ]  Additional detection patterns (governance attacks, MEV)

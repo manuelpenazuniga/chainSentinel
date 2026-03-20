@@ -11,7 +11,7 @@ import { ethers } from "ethers";
 const logger = createLogger("main");
 
 function loadConfig(): AgentConfig {
-  const required = ["RPC_URL", "WS_URL", "CHAIN_ID", "AGENT_PRIVATE_KEY", "VAULT_ADDRESS", "REGISTRY_ADDRESS", "CLAUDE_API_KEY"];
+  const required = ["RPC_URL", "CHAIN_ID", "AGENT_PRIVATE_KEY", "VAULT_ADDRESS", "REGISTRY_ADDRESS", "GEMINI_API_KEY"];
 
   for (const key of required) {
     if (!process.env[key]) {
@@ -21,12 +21,12 @@ function loadConfig(): AgentConfig {
 
   return {
     rpcUrl: process.env.RPC_URL!,
-    wsUrl: process.env.WS_URL!,
+    wsUrl: process.env.WS_URL,
     chainId: parseInt(process.env.CHAIN_ID!),
     agentPrivateKey: process.env.AGENT_PRIVATE_KEY!,
     vaultAddress: process.env.VAULT_ADDRESS!,
     registryAddress: process.env.REGISTRY_ADDRESS!,
-    claudeApiKey: process.env.CLAUDE_API_KEY!,
+    geminiApiKey: process.env.GEMINI_API_KEY!,
     heuristicThreshold: parseInt(process.env.HEURISTIC_THRESHOLD || "30"),
     emergencyThreshold: parseInt(process.env.DEFAULT_EMERGENCY_THRESHOLD || "80"),
     cooldownBlocks: parseInt(process.env.COOLDOWN_BLOCKS || "10"),

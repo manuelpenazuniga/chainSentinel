@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { TransactionData, HeuristicResult, LLMAnalysis, MonitorContextInterface } from "./types.js";
 import { createLogger } from "./logger.js";
 import { ethers } from "ethers";
@@ -75,9 +75,20 @@ export async function analyzeThreatWithLLM(
   heuristicResult: HeuristicResult,
   context: MonitorContextInterface,
   apiKey: string,
-  timeoutMs: number = 10000
+  timeoutMs: number = 30000
 ): Promise<LLMAnalysis> {
-  const anthropic = new Anthropic({ apiKey });
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+    systemInstruction:
+      "You are an expert threat detection system for DeFi smart contracts. " +
+      "Always respond with valid JSON only. No markdown, no explanation outside the JSON.",
+    generationConfig: {
+      maxOutputTokens: 8192,
+      temperature: 0.1,
+      responseMimeType: "application/json",
+    } as Record<string, unknown>,
+  });
 
   const prompt = buildAnalysisPrompt(tx, heuristicResult, context);
 
@@ -87,27 +98,15 @@ export async function analyzeThreatWithLLM(
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await anthropic.messages.create(
-      {
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 500,
-        temperature: 0.1,
-        system:
-          "You are an expert threat detection system for DeFi smart contracts. " +
-          "Always respond with valid JSON only. No markdown, no explanation outside the JSON.",
-        messages: [{ role: "user", content: prompt }],
-      },
-      { signal: controller.signal }
+    const result = await model.generateContent(
+      { contents: [{ role: "user", parts: [{ text: prompt }] }] },
+      { signal: controller.signal } as Parameters<typeof model.generateContent>[1]
     );
 
     clearTimeout(timeoutId);
 
-    const textBlock = response.content.find((block) => block.type === "text");
-    if (!textBlock || textBlock.type !== "text") {
-      throw new Error("No text content in LLM response");
-    }
-
-    const rawText = textBlock.text.replace(/```json\s*|```\s*/g, "").trim();
+    const rawText = result.response.text().replace(/```json\s*|```\s*/g, "").trim();
+    logger.info(`LLM raw response (first 300 chars): ${rawText.slice(0, 300)}`);
     const analysis: LLMAnalysis = JSON.parse(rawText);
 
     if (

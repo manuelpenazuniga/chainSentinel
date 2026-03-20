@@ -5,19 +5,27 @@ import { createLogger } from "./logger.js";
 
 const logger = createLogger("monitor");
 
+/**
+ * Block monitor using HTTP polling.
+ *
+ * Polkadot Hub's eth-rpc adapter does not support eth_subscribe("newHeads"),
+ * so we poll for new blocks via eth_getBlockByNumber instead.
+ * Default interval: 6 seconds (matching Polkadot Hub block time).
+ */
 export class Monitor {
-  private wsProvider: ethers.WebSocketProvider | null = null;
   private httpProvider: ethers.JsonRpcProvider;
   private context: MonitorContext;
-  private config: AgentConfig;
   private isRunning: boolean = false;
-  private reconnectAttempts: number = 0;
-  private maxReconnectAttempts: number = 50;
-  private onBlockCallback: ((txs: TransactionData[], blockNumber: number) => Promise<void>) | null = null;
+  private lastProcessedBlock: number = 0;
+  private pollIntervalMs: number;
+  private pollTimer: ReturnType<typeof setTimeout> | null = null;
+  private onBlockCallback:
+    | ((txs: TransactionData[], blockNumber: number) => Promise<void>)
+    | null = null;
 
   constructor(config: AgentConfig, context: MonitorContext) {
-    this.config = config;
     this.context = context;
+    this.pollIntervalMs = parseInt(process.env.POLL_INTERVAL_MS || "6000");
     this.httpProvider = new ethers.JsonRpcProvider(config.rpcUrl, {
       chainId: config.chainId,
       name: "polkadot-hub-testnet",
@@ -30,68 +38,55 @@ export class Monitor {
     this.onBlockCallback = onBlock;
     this.isRunning = true;
 
-    logger.info(`Starting monitor on ${this.config.wsUrl}`);
-    await this.connect();
+    this.lastProcessedBlock = await this.httpProvider.getBlockNumber();
+    logger.info(
+      `Starting monitor (HTTP polling every ${this.pollIntervalMs}ms). ` +
+        `Current block: ${this.lastProcessedBlock}`
+    );
+
+    this.schedulePoll();
   }
 
   async stop(): Promise<void> {
     this.isRunning = false;
-    if (this.wsProvider) {
-      await this.wsProvider.destroy();
-      this.wsProvider = null;
+    if (this.pollTimer) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = null;
     }
     logger.info("Monitor stopped");
   }
 
-  private async connect(): Promise<void> {
-    try {
-      this.wsProvider = new ethers.WebSocketProvider(this.config.wsUrl, {
-        chainId: this.config.chainId,
-        name: "polkadot-hub-testnet",
-      });
-
-      this.wsProvider.on("block", async (blockNumber: number) => {
-        try {
-          await this.processBlock(blockNumber);
-        } catch (error) {
-          logger.error(`Error processing block ${blockNumber}:`, error);
-        }
-      });
-
-      // Handle provider errors and disconnection
-      this.wsProvider.on("error", (error: Error) => {
-        logger.error("WebSocket error:", error);
-        if (this.isRunning) {
-          this.scheduleReconnect();
-        }
-      });
-
-      this.reconnectAttempts = 0;
-      logger.info("WebSocket connected. Listening for new blocks...");
-    } catch (error) {
-      logger.error("Failed to connect WebSocket:", error);
-      if (this.isRunning) {
-        this.scheduleReconnect();
-      }
-    }
+  private schedulePoll(): void {
+    if (!this.isRunning) return;
+    this.pollTimer = setTimeout(() => this.poll(), this.pollIntervalMs);
   }
 
-  private scheduleReconnect(): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      logger.error("Max reconnect attempts reached. Stopping monitor.");
-      this.isRunning = false;
-      return;
+  private async poll(): Promise<void> {
+    if (!this.isRunning) return;
+
+    try {
+      const latestBlock = await this.httpProvider.getBlockNumber();
+
+      if (latestBlock > this.lastProcessedBlock) {
+        // Process each new block sequentially
+        for (
+          let bn = this.lastProcessedBlock + 1;
+          bn <= latestBlock && this.isRunning;
+          bn++
+        ) {
+          try {
+            await this.processBlock(bn);
+          } catch (error) {
+            logger.error(`Error processing block ${bn}:`, error);
+          }
+        }
+        this.lastProcessedBlock = latestBlock;
+      }
+    } catch (error) {
+      logger.error("Polling error:", error);
     }
 
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
-    this.reconnectAttempts++;
-    logger.info(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-
-    setTimeout(async () => {
-      if (this.isRunning) {
-        await this.connect();
-      }
-    }, delay);
+    this.schedulePoll();
   }
 
   private async processBlock(blockNumber: number): Promise<void> {
@@ -124,10 +119,23 @@ export class Monitor {
 
     await this.context.updateWithBlock(blockNumber, txs);
 
+    // Track contract balances for heuristic rules (DRASTIC_BALANCE_CHANGE, LARGE_WITHDRAWAL)
+    const contractAddresses = new Set(txs.map((tx) => tx.to));
+    for (const addr of contractAddresses) {
+      try {
+        const balance = await this.httpProvider.getBalance(addr, blockNumber);
+        this.context.setBalanceAtBlock(addr, blockNumber, balance);
+      } catch {
+        // Balance fetch may fail for some addresses
+      }
+    }
+
     for (const txData of txs) {
       if (txData.input.length > 2) {
         try {
-          const receipt = await this.httpProvider.getTransactionReceipt(txData.hash);
+          const receipt = await this.httpProvider.getTransactionReceipt(
+            txData.hash
+          );
           if (receipt) {
             txData.gasUsed = receipt.gasUsed.toString();
           }

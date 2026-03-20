@@ -95,12 +95,12 @@ export interface MonitorContextInterface {
 
 export interface AgentConfig {
   rpcUrl: string;
-  wsUrl: string;
+  wsUrl?: string;
   chainId: number;
   agentPrivateKey: string;
   vaultAddress: string;
   registryAddress: string;
-  claudeApiKey: string;
+  geminiApiKey: string;
   heuristicThreshold: number;
   emergencyThreshold: number;
   cooldownBlocks: number;
