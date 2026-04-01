@@ -151,10 +151,10 @@ export default function DashboardPage() {
       {/* Main grid — 3 columns on large, 1 on mobile */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
-          <ThreatChart contractAddress={VAULT_ADDRESS} />
+          <ThreatChart />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <VaultStatus />
-            <ThreatFeed contractAddress={VAULT_ADDRESS} />
+            <ThreatFeed />
           </div>
         </div>
         <div className="space-y-6">

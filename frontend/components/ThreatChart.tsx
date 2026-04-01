@@ -1,7 +1,8 @@
 "use client";
 
-import { useReadContract } from "wagmi";
+import { usePublicClient } from "wagmi";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@/lib/contracts";
+import { useEffect, useState } from "react";
 import {
   AreaChart,
   Area,
@@ -13,20 +14,11 @@ import {
   CartesianGrid,
 } from "recharts";
 
-interface ThreatReport {
-  reporter: string;
-  targetContract: string;
-  threatScore: bigint;
-  attackType: string;
-  evidence: string;
-  timestamp: bigint;
-  blockNumber: bigint;
-}
-
 interface ChartDataPoint {
   block: number;
   score: number;
   attackType: string;
+  target: string;
   time: string;
 }
 
@@ -45,34 +37,65 @@ function CustomTooltip({
       <p className="text-white font-semibold">Score: {data.score}/100</p>
       <p className="text-gray-400">Block #{data.block}</p>
       <p className="text-gray-400">{data.attackType.replace(/_/g, " ")}</p>
+      <p className="text-gray-500 font-mono">
+        Target: {data.target.slice(0, 8)}...{data.target.slice(-4)}
+      </p>
       <p className="text-gray-500">{data.time}</p>
     </div>
   );
 }
 
-export function ThreatChart({
-  contractAddress,
-}: {
-  contractAddress?: `0x${string}`;
-}) {
-  const { data: reports, isLoading } = useReadContract({
-    address: REGISTRY_ADDRESS,
-    abi: REGISTRY_ABI,
-    functionName: "getReports",
-    args: contractAddress
-      ? [contractAddress, BigInt(0), BigInt(20)]
-      : undefined,
-    query: { enabled: !!contractAddress },
-  });
+export function ThreatChart() {
+  const publicClient = usePublicClient();
+  const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const reportList = (reports as ThreatReport[]) || [];
+  useEffect(() => {
+    if (!publicClient) return;
 
-  const chartData: ChartDataPoint[] = reportList.map((r) => ({
-    block: Number(r.blockNumber),
-    score: Number(r.threatScore),
-    attackType: r.attackType,
-    time: new Date(Number(r.timestamp) * 1000).toLocaleTimeString(),
-  }));
+    async function fetchEvents() {
+      try {
+        const currentBlock = await publicClient!.getBlockNumber();
+        // Look back ~2000 blocks (~3-4 hours on Polkadot Hub)
+        const fromBlock = currentBlock > BigInt(2000) ? currentBlock - BigInt(2000) : BigInt(0);
+
+        const logs = await publicClient!.getLogs({
+          address: REGISTRY_ADDRESS,
+          event: {
+            type: "event",
+            name: "ThreatReported",
+            inputs: [
+              { name: "reporter", type: "address", indexed: true },
+              { name: "targetContract", type: "address", indexed: true },
+              { name: "threatScore", type: "uint256", indexed: false },
+              { name: "attackType", type: "string", indexed: false },
+              { name: "blockNumber", type: "uint256", indexed: false },
+            ],
+          },
+          fromBlock,
+          toBlock: currentBlock,
+        });
+
+        const points: ChartDataPoint[] = logs.map((log) => ({
+          block: Number(log.args.blockNumber ?? log.blockNumber),
+          score: Number(log.args.threatScore ?? 0),
+          attackType: log.args.attackType ?? "UNKNOWN",
+          target: log.args.targetContract ?? "0x",
+          time: new Date().toLocaleTimeString(),
+        }));
+
+        // Sort by block ascending
+        points.sort((a, b) => a.block - b.block);
+        setChartData(points);
+      } catch (err) {
+        console.error("Failed to fetch ThreatReported events:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    fetchEvents();
+  }, [publicClient]);
 
   if (isLoading) {
     return (

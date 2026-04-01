@@ -1,17 +1,15 @@
 "use client";
 
-import { useReadContract } from "wagmi";
+import { usePublicClient, useReadContract } from "wagmi";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@/lib/contracts";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
-interface ThreatReport {
-  reporter: string;
+interface FeedItem {
   targetContract: string;
-  threatScore: bigint;
+  threatScore: number;
   attackType: string;
-  evidence: string;
-  timestamp: bigint;
-  blockNumber: bigint;
+  blockNumber: number;
+  reporter: string;
 }
 
 function ScoreBadge({ score }: { score: number }) {
@@ -44,17 +42,10 @@ function AttackTypeBadge({ type }: { type: string }) {
   );
 }
 
-function timeAgo(timestamp: number): string {
-  const seconds = Math.floor(Date.now() / 1000 - timestamp);
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
-}
-
-export function ThreatFeed({ contractAddress }: { contractAddress?: `0x${string}` }) {
-  const [page, setPage] = useState(0);
-  const pageSize = 10;
+export function ThreatFeed() {
+  const publicClient = usePublicClient();
+  const [reportList, setReportList] = useState<FeedItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   const { data: totalReports } = useReadContract({
     address: REGISTRY_ADDRESS,
@@ -62,34 +53,53 @@ export function ThreatFeed({ contractAddress }: { contractAddress?: `0x${string}
     functionName: "totalReports",
   });
 
-  const { data: reports, isLoading } = useReadContract({
-    address: REGISTRY_ADDRESS,
-    abi: REGISTRY_ABI,
-    functionName: "getReports",
-    args: contractAddress
-      ? [contractAddress, BigInt(page * pageSize), BigInt(pageSize)]
-      : undefined,
-    query: { enabled: !!contractAddress },
-  });
-
   const total = Number(totalReports || 0);
 
-  if (!contractAddress) {
-    return (
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-6">
-        <h2 className="text-lg font-semibold text-white mb-4">Threat Feed</h2>
-        <div className="flex flex-col items-center justify-center py-12 text-gray-500">
-          <svg className="w-12 h-12 mb-3 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-          </svg>
-          <p className="text-sm">No contract selected for monitoring</p>
-          <p className="text-xs text-gray-600 mt-1">
-            Total reports in registry: {total}
-          </p>
-        </div>
-      </div>
-    );
-  }
+  useEffect(() => {
+    if (!publicClient) return;
+
+    async function fetchEvents() {
+      try {
+        const currentBlock = await publicClient!.getBlockNumber();
+        const fromBlock = currentBlock > BigInt(2000) ? currentBlock - BigInt(2000) : BigInt(0);
+
+        const logs = await publicClient!.getLogs({
+          address: REGISTRY_ADDRESS,
+          event: {
+            type: "event",
+            name: "ThreatReported",
+            inputs: [
+              { name: "reporter", type: "address", indexed: true },
+              { name: "targetContract", type: "address", indexed: true },
+              { name: "threatScore", type: "uint256", indexed: false },
+              { name: "attackType", type: "string", indexed: false },
+              { name: "blockNumber", type: "uint256", indexed: false },
+            ],
+          },
+          fromBlock,
+          toBlock: currentBlock,
+        });
+
+        const items: FeedItem[] = logs.map((log) => ({
+          targetContract: log.args.targetContract ?? "0x",
+          threatScore: Number(log.args.threatScore ?? 0),
+          attackType: log.args.attackType ?? "UNKNOWN",
+          blockNumber: Number(log.args.blockNumber ?? log.blockNumber),
+          reporter: log.args.reporter ?? "0x",
+        }));
+
+        // Most recent first
+        items.sort((a, b) => b.blockNumber - a.blockNumber);
+        setReportList(items);
+      } catch (err) {
+        console.error("Failed to fetch ThreatReported events:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    fetchEvents();
+  }, [publicClient]);
 
   if (isLoading) {
     return (
@@ -102,14 +112,12 @@ export function ThreatFeed({ contractAddress }: { contractAddress?: `0x${string}
     );
   }
 
-  const reportList = (reports as ThreatReport[]) || [];
-
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-6">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-white">Threat Feed</h2>
         <span className="text-xs text-gray-500">
-          {reportList.length} report{reportList.length !== 1 ? "s" : ""}
+          {total} total report{total !== 1 ? "s" : ""} on-chain
         </span>
       </div>
 
@@ -129,11 +137,11 @@ export function ThreatFeed({ contractAddress }: { contractAddress?: `0x${string}
             >
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  <ScoreBadge score={Number(report.threatScore)} />
+                  <ScoreBadge score={report.threatScore} />
                   <AttackTypeBadge type={report.attackType} />
                 </div>
                 <span className="text-xs text-gray-500">
-                  {timeAgo(Number(report.timestamp))}
+                  Block #{report.blockNumber}
                 </span>
               </div>
               <div className="text-xs text-gray-400 space-y-1">
@@ -145,35 +153,15 @@ export function ThreatFeed({ contractAddress }: { contractAddress?: `0x${string}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span>Block</span>
-                  <span className="text-gray-300">
-                    #{report.blockNumber.toString()}
+                  <span>Reporter</span>
+                  <span className="font-mono text-gray-300">
+                    {report.reporter.slice(0, 10)}...
+                    {report.reporter.slice(-4)}
                   </span>
                 </div>
-                {report.evidence && (
-                  <p className="text-gray-500 mt-1 truncate">{report.evidence}</p>
-                )}
               </div>
             </div>
           ))}
-        </div>
-      )}
-
-      {reportList.length >= pageSize && (
-        <div className="flex justify-between mt-3 pt-3 border-t border-gray-800">
-          <button
-            disabled={page === 0}
-            onClick={() => setPage((p) => p - 1)}
-            className="text-xs text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            Previous
-          </button>
-          <button
-            onClick={() => setPage((p) => p + 1)}
-            className="text-xs text-gray-400 hover:text-white"
-          >
-            Next
-          </button>
         </div>
       )}
     </div>
