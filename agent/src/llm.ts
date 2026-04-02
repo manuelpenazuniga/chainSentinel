@@ -106,7 +106,7 @@ export async function analyzeThreatWithLLM(
     clearTimeout(timeoutId);
 
     const rawText = result.response.text().replace(/```json\s*|```\s*/g, "").trim();
-    logger.info(`LLM raw response (first 300 chars): ${rawText.slice(0, 300)}`);
+    logger.debug(`LLM raw response (first 300 chars): ${rawText.slice(0, 300)}`);
     const analysis: LLMAnalysis = JSON.parse(rawText);
 
     if (

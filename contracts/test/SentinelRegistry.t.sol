@@ -7,8 +7,10 @@ import "../src/SentinelRegistry.sol";
 contract SentinelRegistryTest is Test {
     SentinelRegistry public registry;
 
+    address public deployer;
     address public reporter1 = makeAddr("reporter1");
     address public reporter2 = makeAddr("reporter2");
+    address public unauthorized = makeAddr("unauthorized");
     address public maliciousContract = makeAddr("malicious");
 
     // Re-declare events for expectEmit
@@ -16,9 +18,84 @@ contract SentinelRegistryTest is Test {
         address indexed reporter, address indexed targetContract, uint256 threatScore, string attackType, uint256 blockNumber
     );
     event ContractBlacklisted(address indexed contractAddress, uint256 aggregateScore);
+    event ReporterAdded(address indexed reporter);
+    event ReporterRemoved(address indexed reporter);
 
     function setUp() public {
+        deployer = address(this);
         registry = new SentinelRegistry();
+        // Authorize test reporters
+        registry.addReporter(reporter1);
+        registry.addReporter(reporter2);
+    }
+
+    // ─── Access Control Tests ───
+
+    function test_owner_isDeployer() public view {
+        assertEq(registry.owner(), deployer);
+    }
+
+    function test_deployer_isAuthorizedReporter() public view {
+        assertTrue(registry.authorizedReporters(deployer));
+    }
+
+    function test_addReporter_onlyOwner() public {
+        address newReporter = makeAddr("newReporter");
+        registry.addReporter(newReporter);
+        assertTrue(registry.authorizedReporters(newReporter));
+    }
+
+    function test_addReporter_revertsIfNotOwner() public {
+        vm.prank(reporter1);
+        vm.expectRevert(SentinelRegistry.NotOwner.selector);
+        registry.addReporter(makeAddr("someone"));
+    }
+
+    function test_addReporter_revertsIfZeroAddress() public {
+        vm.expectRevert(SentinelRegistry.ZeroAddress.selector);
+        registry.addReporter(address(0));
+    }
+
+    function test_addReporter_emitsEvent() public {
+        address newReporter = makeAddr("newReporter");
+        vm.expectEmit(true, false, false, false);
+        emit ReporterAdded(newReporter);
+        registry.addReporter(newReporter);
+    }
+
+    function test_removeReporter_onlyOwner() public {
+        registry.removeReporter(reporter1);
+        assertFalse(registry.authorizedReporters(reporter1));
+    }
+
+    function test_removeReporter_revertsIfNotOwner() public {
+        vm.prank(reporter1);
+        vm.expectRevert(SentinelRegistry.NotOwner.selector);
+        registry.removeReporter(reporter2);
+    }
+
+    function test_removeReporter_revertsIfZeroAddress() public {
+        vm.expectRevert(SentinelRegistry.ZeroAddress.selector);
+        registry.removeReporter(address(0));
+    }
+
+    function test_removeReporter_emitsEvent() public {
+        vm.expectEmit(true, false, false, false);
+        emit ReporterRemoved(reporter1);
+        registry.removeReporter(reporter1);
+    }
+
+    function test_reportThreat_revertsIfNotAuthorized() public {
+        vm.prank(unauthorized);
+        vm.expectRevert(SentinelRegistry.NotAuthorizedReporter.selector);
+        registry.reportThreat(maliciousContract, 75, "FLASH_LOAN", "0xabc123");
+    }
+
+    function test_reportThreat_revertsAfterRemoval() public {
+        registry.removeReporter(reporter1);
+        vm.prank(reporter1);
+        vm.expectRevert(SentinelRegistry.NotAuthorizedReporter.selector);
+        registry.reportThreat(maliciousContract, 75, "FLASH_LOAN", "0xabc123");
     }
 
     // ─── Report Tests ───

@@ -82,6 +82,7 @@ export interface MonitorContextInterface {
   getSignificantThreshold(contractAddress: string): bigint;
   hasFlashLoanInteraction(txHash: string): boolean;
   isBlacklisted(address: string): boolean;
+  isWhitelisted(address: string): boolean;
   getBalanceBefore(contractAddress: string, blockNumber: number): bigint;
   getBalanceAfter(contractAddress: string, blockNumber: number): bigint;
   hasPreviousInteraction(from: string, to: string): boolean;

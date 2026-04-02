@@ -1,13 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { parseEther } from "viem";
+import { parseEther, formatEther } from "viem";
 import { useReadContract, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { VAULT_ABI, VAULT_ADDRESS, NATIVE_TOKEN } from "@/lib/contracts";
-import { formatEther } from "viem";
 
 export function WithdrawForm() {
   const [amount, setAmount] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   const { data: balance } = useReadContract({
     address: VAULT_ADDRESS,
@@ -21,19 +21,29 @@ export function WithdrawForm() {
     hash,
   });
 
+  const currentBalance = balance ? formatEther(balance) : "0";
+
   function handleWithdraw(e: React.FormEvent) {
     e.preventDefault();
+    setError(null);
     if (!amount || parseFloat(amount) <= 0) return;
 
-    writeContract({
-      address: VAULT_ADDRESS,
-      abi: VAULT_ABI,
-      functionName: "withdraw",
-      args: [NATIVE_TOKEN, parseEther(amount)],
-    });
+    try {
+      const value = parseEther(amount);
+      if (balance && value > balance) {
+        setError(`Amount exceeds vault balance (${parseFloat(currentBalance).toFixed(4)} PAS)`);
+        return;
+      }
+      writeContract({
+        address: VAULT_ADDRESS,
+        abi: VAULT_ABI,
+        functionName: "withdraw",
+        args: [NATIVE_TOKEN, value],
+      });
+    } catch {
+      setError("Invalid amount format");
+    }
   }
-
-  const currentBalance = balance ? formatEther(balance) : "0";
 
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-6">
@@ -58,14 +68,17 @@ export function WithdrawForm() {
             min="0"
             placeholder="0.0"
             value={amount}
-            onChange={(e) => setAmount(e.target.value)}
+            onChange={(e) => { setAmount(e.target.value); setError(null); }}
             className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500"
           />
+          {error && (
+            <p className="text-xs text-red-400 mt-1">{error}</p>
+          )}
         </div>
 
         <button
           type="submit"
-          disabled={isPending || isConfirming || !amount}
+          disabled={isPending || isConfirming || !amount || parseFloat(amount) <= 0}
           className="w-full py-2.5 px-4 rounded-lg font-medium text-sm bg-gray-700 hover:bg-gray-600 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {isPending

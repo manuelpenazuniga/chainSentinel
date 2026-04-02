@@ -1,16 +1,8 @@
 "use client";
 
-import { usePublicClient, useReadContract } from "wagmi";
+import { useReadContract } from "wagmi";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@/lib/contracts";
-import { useState, useEffect } from "react";
-
-interface FeedItem {
-  targetContract: string;
-  threatScore: number;
-  attackType: string;
-  blockNumber: number;
-  reporter: string;
-}
+import { useThreatEvents } from "@/lib/useThreatEvents";
 
 function ScoreBadge({ score }: { score: number }) {
   let color = "bg-gray-700 text-gray-300";
@@ -43,9 +35,7 @@ function AttackTypeBadge({ type }: { type: string }) {
 }
 
 export function ThreatFeed() {
-  const publicClient = usePublicClient();
-  const [reportList, setReportList] = useState<FeedItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const { events: reportList, isLoading } = useThreatEvents();
 
   const { data: totalReports } = useReadContract({
     address: REGISTRY_ADDRESS,
@@ -54,52 +44,6 @@ export function ThreatFeed() {
   });
 
   const total = Number(totalReports || 0);
-
-  useEffect(() => {
-    if (!publicClient) return;
-
-    async function fetchEvents() {
-      try {
-        const currentBlock = await publicClient!.getBlockNumber();
-        const fromBlock = currentBlock > BigInt(2000) ? currentBlock - BigInt(2000) : BigInt(0);
-
-        const logs = await publicClient!.getLogs({
-          address: REGISTRY_ADDRESS,
-          event: {
-            type: "event",
-            name: "ThreatReported",
-            inputs: [
-              { name: "reporter", type: "address", indexed: true },
-              { name: "targetContract", type: "address", indexed: true },
-              { name: "threatScore", type: "uint256", indexed: false },
-              { name: "attackType", type: "string", indexed: false },
-              { name: "blockNumber", type: "uint256", indexed: false },
-            ],
-          },
-          fromBlock,
-          toBlock: currentBlock,
-        });
-
-        const items: FeedItem[] = logs.map((log) => ({
-          targetContract: log.args.targetContract ?? "0x",
-          threatScore: Number(log.args.threatScore ?? 0),
-          attackType: log.args.attackType ?? "UNKNOWN",
-          blockNumber: Number(log.args.blockNumber ?? log.blockNumber),
-          reporter: log.args.reporter ?? "0x",
-        }));
-
-        // Most recent first
-        items.sort((a, b) => b.blockNumber - a.blockNumber);
-        setReportList(items);
-      } catch (err) {
-        console.error("Failed to fetch ThreatReported events:", err);
-      } finally {
-        setIsLoading(false);
-      }
-    }
-
-    fetchEvents();
-  }, [publicClient]);
 
   if (isLoading) {
     return (

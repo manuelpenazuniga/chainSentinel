@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   const blockNumber = await provider.getBlockNumber();
   logger.info(`Current block: ${blockNumber}`);
 
-  const context = new MonitorContext(provider, config.registryAddress);
+  const context = new MonitorContext(provider, config.registryAddress, 500, config.vaultAddress);
   const monitor = new Monitor(config, context);
   const executor = new Executor(config);
   const alerter = new Alerter(config);

@@ -4,6 +4,12 @@ import { createLogger } from "./logger.js";
 
 const logger = createLogger("context");
 
+const FLASH_LOAN_SELECTORS = [
+  "0xab9c4b5d", // flashLoan (Aave V2)
+  "0x5cffe9de", // flashLoan (ERC-3156)
+  "0xd9d98ce4", // flashBorrow
+];
+
 class CircularBuffer<T> {
   private buffer: T[];
   private head: number = 0;
@@ -42,17 +48,22 @@ export class MonitorContext implements MonitorContextInterface {
   private balanceCache: Map<string, Map<number, bigint>> = new Map();
   private interactionHistory: Set<string> = new Set();
   private contractLabels: Map<string, string> = new Map();
+  private flashLoanTxHashes: Set<string> = new Set();
+  private whitelistedContracts: Set<string> = new Set();
   private currentBlock: number = 0;
   private provider: ethers.JsonRpcProvider;
   private registryAddress: string;
+  private vaultAddress: string;
 
   constructor(
     provider: ethers.JsonRpcProvider,
     registryAddress: string,
-    bufferCapacity: number = 500
+    bufferCapacity: number = 500,
+    vaultAddress: string = ""
   ) {
     this.provider = provider;
     this.registryAddress = registryAddress;
+    this.vaultAddress = vaultAddress;
     this.recentTxBuffer = new CircularBuffer<TransactionData>(bufferCapacity);
   }
 
@@ -66,10 +77,25 @@ export class MonitorContext implements MonitorContextInterface {
       this.updateAvgValue(toLower, BigInt(tx.value));
       this.recentTxBuffer.push(tx);
       this.interactionHistory.add(`${fromLower}:${toLower}`);
+
+      // Track flash loan interactions by tx hash
+      if (tx.input.length >= 10) {
+        const selector = tx.input.slice(0, 10);
+        if (FLASH_LOAN_SELECTORS.includes(selector)) {
+          this.flashLoanTxHashes.add(tx.hash);
+        }
+      }
+    }
+
+    // Cap flash loan hash set to prevent unbounded growth
+    if (this.flashLoanTxHashes.size > 10000) {
+      const entries = [...this.flashLoanTxHashes];
+      this.flashLoanTxHashes = new Set(entries.slice(entries.length - 5000));
     }
 
     if (blockNumber % 10 === 0) {
       await this.refreshBlacklistFromRegistry();
+      await this.refreshWhitelistFromVault();
     }
   }
 
@@ -99,6 +125,57 @@ export class MonitorContext implements MonitorContextInterface {
 
   addToBlacklist(address: string): void {
     this.blacklist.add(address.toLowerCase());
+  }
+
+  /// Resolve the deployment age of a contract via binary search over block history.
+  /// Caches the result so subsequent calls for the same address are free.
+  async resolveContractAge(address: string, currentBlockNumber: number): Promise<void> {
+    const addr = address.toLowerCase();
+    if (this.contractAges.has(addr)) return;
+
+    try {
+      const code = await this.provider.getCode(addr, currentBlockNumber);
+      if (!code || code === "0x") {
+        // Not a contract — mark with large age so FRESH_CONTRACT won't trigger
+        this.contractAges.set(addr, 0);
+        return;
+      }
+
+      // Binary search: find the earliest block where code exists (max 2000 blocks back)
+      const searchDepth = 2000;
+      let lo = Math.max(0, currentBlockNumber - searchDepth);
+      let hi = currentBlockNumber;
+      let deployBlock = currentBlockNumber;
+
+      while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        try {
+          const midCode = await this.provider.getCode(addr, mid);
+          if (midCode && midCode !== "0x") {
+            deployBlock = mid;
+            hi = mid - 1;
+          } else {
+            lo = mid + 1;
+          }
+        } catch {
+          // If getCode at historical block fails, narrow search from the other side
+          lo = mid + 1;
+        }
+      }
+
+      // Get timestamp of the deploy block
+      const block = await this.provider.getBlock(deployBlock);
+      if (block) {
+        this.contractAges.set(addr, block.timestamp);
+        logger.debug(`Contract ${addr} deployed at block ${deployBlock} (timestamp ${block.timestamp})`);
+      } else {
+        // Fallback: treat as old contract
+        this.contractAges.set(addr, 0);
+      }
+    } catch (error) {
+      logger.warn(`Failed to resolve contract age for ${addr}:`, error);
+      // Don't cache on error — allow retry next block
+    }
   }
 
   // ─── MonitorContextInterface Implementation ───
@@ -142,12 +219,16 @@ export class MonitorContext implements MonitorContextInterface {
     return fiveXAvg < oneDOT ? fiveXAvg : oneDOT;
   }
 
-  hasFlashLoanInteraction(_txHash: string): boolean {
-    return false;
+  hasFlashLoanInteraction(txHash: string): boolean {
+    return this.flashLoanTxHashes.has(txHash);
   }
 
   isBlacklisted(address: string): boolean {
     return this.blacklist.has(address.toLowerCase());
+  }
+
+  isWhitelisted(address: string): boolean {
+    return this.whitelistedContracts.has(address.toLowerCase());
   }
 
   getBalanceBefore(contractAddress: string, blockNumber: number): bigint {
@@ -214,17 +295,89 @@ export class MonitorContext implements MonitorContextInterface {
       const registryAbi = [
         "function isBlacklisted(address) view returns (bool)",
       ];
-      // Keep reference to avoid unused variable warning in strict mode
-      const _registry = new ethers.Contract(
+      const registry = new ethers.Contract(
         this.registryAddress,
         registryAbi,
         this.provider
       );
-      void _registry;
 
-      logger.debug("Blacklist refresh completed");
+      // Check all known contract addresses against the on-chain blacklist
+      const knownAddresses = new Set([
+        ...this.avgValues.keys(),
+        ...this.contractAges.keys(),
+      ]);
+
+      const addresses = [...knownAddresses];
+      // Batch with concurrency limit of 5
+      for (let i = 0; i < addresses.length; i += 5) {
+        const batch = addresses.slice(i, i + 5);
+        const results = await Promise.all(
+          batch.map(async (addr) => {
+            try {
+              const result = await registry.isBlacklisted(addr);
+              return { addr, blacklisted: result as boolean };
+            } catch {
+              return { addr, blacklisted: false };
+            }
+          })
+        );
+        for (const { addr, blacklisted } of results) {
+          if (blacklisted) {
+            this.blacklist.add(addr);
+          }
+        }
+      }
+
+      logger.debug(`Blacklist refresh completed (checked ${addresses.length} addresses)`);
     } catch (error) {
       logger.warn("Failed to refresh blacklist from registry:", error);
+    }
+  }
+
+  private async refreshWhitelistFromVault(): Promise<void> {
+    if (!this.vaultAddress || this.vaultAddress === "0x") return;
+
+    try {
+      const vaultAbi = [
+        "function isWhitelisted(address) view returns (bool)",
+      ];
+      const vault = new ethers.Contract(
+        this.vaultAddress,
+        vaultAbi,
+        this.provider
+      );
+
+      // Check known contract addresses against vault whitelist
+      const knownAddresses = new Set([
+        ...this.avgValues.keys(),
+        ...this.contractAges.keys(),
+      ]);
+
+      const addresses = [...knownAddresses];
+      for (let i = 0; i < addresses.length; i += 5) {
+        const batch = addresses.slice(i, i + 5);
+        const results = await Promise.all(
+          batch.map(async (addr) => {
+            try {
+              const result = await vault.isWhitelisted(addr);
+              return { addr, whitelisted: result as boolean };
+            } catch {
+              return { addr, whitelisted: false };
+            }
+          })
+        );
+        for (const { addr, whitelisted } of results) {
+          if (whitelisted) {
+            this.whitelistedContracts.add(addr);
+          } else {
+            this.whitelistedContracts.delete(addr);
+          }
+        }
+      }
+
+      logger.debug(`Whitelist refresh completed (checked ${addresses.length} addresses)`);
+    } catch (error) {
+      logger.warn("Failed to refresh whitelist from vault:", error);
     }
   }
 }

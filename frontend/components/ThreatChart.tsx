@@ -1,8 +1,6 @@
 "use client";
 
-import { usePublicClient } from "wagmi";
-import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@/lib/contracts";
-import { useEffect, useState } from "react";
+import { useThreatEvents } from "@/lib/useThreatEvents";
 import {
   AreaChart,
   Area,
@@ -46,56 +44,18 @@ function CustomTooltip({
 }
 
 export function ThreatChart() {
-  const publicClient = usePublicClient();
-  const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const { events, isLoading } = useThreatEvents(20);
 
-  useEffect(() => {
-    if (!publicClient) return;
-
-    async function fetchEvents() {
-      try {
-        const currentBlock = await publicClient!.getBlockNumber();
-        // Look back ~2000 blocks (~3-4 hours on Polkadot Hub)
-        const fromBlock = currentBlock > BigInt(2000) ? currentBlock - BigInt(2000) : BigInt(0);
-
-        const logs = await publicClient!.getLogs({
-          address: REGISTRY_ADDRESS,
-          event: {
-            type: "event",
-            name: "ThreatReported",
-            inputs: [
-              { name: "reporter", type: "address", indexed: true },
-              { name: "targetContract", type: "address", indexed: true },
-              { name: "threatScore", type: "uint256", indexed: false },
-              { name: "attackType", type: "string", indexed: false },
-              { name: "blockNumber", type: "uint256", indexed: false },
-            ],
-          },
-          fromBlock,
-          toBlock: currentBlock,
-        });
-
-        const points: ChartDataPoint[] = logs.map((log) => ({
-          block: Number(log.args.blockNumber ?? log.blockNumber),
-          score: Number(log.args.threatScore ?? 0),
-          attackType: log.args.attackType ?? "UNKNOWN",
-          target: log.args.targetContract ?? "0x",
-          time: new Date().toLocaleTimeString(),
-        }));
-
-        // Sort by block ascending
-        points.sort((a, b) => a.block - b.block);
-        setChartData(points);
-      } catch (err) {
-        console.error("Failed to fetch ThreatReported events:", err);
-      } finally {
-        setIsLoading(false);
-      }
-    }
-
-    fetchEvents();
-  }, [publicClient]);
+  // Convert events to chart data points (ascending order for chart)
+  const chartData: ChartDataPoint[] = [...events]
+    .reverse() // useThreatEvents returns desc, chart needs asc
+    .map((event) => ({
+      block: event.blockNumber,
+      score: event.threatScore,
+      attackType: event.attackType,
+      target: event.targetContract,
+      time: new Date(event.timestamp * 1000).toLocaleTimeString(),
+    }));
 
   if (isLoading) {
     return (
@@ -110,7 +70,7 @@ export function ThreatChart() {
     <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-6">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-white">Threat Score History</h2>
-        <span className="text-xs text-gray-500">Last 20 reports</span>
+        <span className="text-xs text-gray-500">Last {chartData.length} report{chartData.length !== 1 ? "s" : ""}</span>
       </div>
 
       {chartData.length === 0 ? (

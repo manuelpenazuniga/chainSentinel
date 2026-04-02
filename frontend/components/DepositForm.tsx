@@ -7,6 +7,7 @@ import { VAULT_ABI, VAULT_ADDRESS } from "@/lib/contracts";
 
 export function DepositForm() {
   const [amount, setAmount] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const { data: hash, writeContract, isPending } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
     hash,
@@ -14,14 +15,20 @@ export function DepositForm() {
 
   function handleDeposit(e: React.FormEvent) {
     e.preventDefault();
+    setError(null);
     if (!amount || parseFloat(amount) <= 0) return;
 
-    writeContract({
-      address: VAULT_ADDRESS,
-      abi: VAULT_ABI,
-      functionName: "depositNative",
-      value: parseEther(amount),
-    });
+    try {
+      const value = parseEther(amount);
+      writeContract({
+        address: VAULT_ADDRESS,
+        abi: VAULT_ABI,
+        functionName: "depositNative",
+        value,
+      });
+    } catch {
+      setError("Invalid amount format");
+    }
   }
 
   return (
@@ -41,18 +48,21 @@ export function DepositForm() {
               min="0"
               placeholder="0.0"
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              onChange={(e) => { setAmount(e.target.value); setError(null); }}
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500"
             />
             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-gray-500">
               PAS
             </span>
           </div>
+          {error && (
+            <p className="text-xs text-red-400 mt-1">{error}</p>
+          )}
         </div>
 
         <button
           type="submit"
-          disabled={isPending || isConfirming || !amount}
+          disabled={isPending || isConfirming || !amount || parseFloat(amount) <= 0}
           className="w-full py-2.5 px-4 rounded-lg font-medium text-sm bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {isPending

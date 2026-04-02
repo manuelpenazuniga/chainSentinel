@@ -130,6 +130,12 @@ export function calculateHeuristicScore(
     }
   }
 
+  // Reduce score by 50% for whitelisted target contracts (fewer false positives)
+  if (context.isWhitelisted(tx.to)) {
+    totalScore = Math.floor(totalScore * 0.5);
+    logger.debug(`Score reduced 50% for whitelisted contract ${tx.to}: ${totalScore}`);
+  }
+
   const result: HeuristicResult = {
     score: Math.min(totalScore, 100),
     triggeredRules,

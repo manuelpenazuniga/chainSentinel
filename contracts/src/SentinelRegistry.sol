@@ -2,9 +2,10 @@
 pragma solidity ^0.8.20;
 
 /// @title SentinelRegistry
-/// @notice A public, community-driven threat registry for smart contracts on Polkadot Hub.
-///         Any address can report threats. Aggregate scores are computed per contract,
-///         and contracts exceeding the blacklist threshold are automatically flagged.
+/// @notice An access-controlled threat registry for smart contracts on Polkadot Hub.
+///         Only authorized reporters (e.g., AI agents) can submit threats.
+///         Aggregate scores are computed per contract, and contracts exceeding
+///         the blacklist threshold are automatically flagged.
 contract SentinelRegistry {
     // ─── Data Structures ───
 
@@ -19,6 +20,12 @@ contract SentinelRegistry {
     }
 
     // ─── State Variables ───
+
+    /// @notice Contract owner (deployer)
+    address public owner;
+
+    /// @notice Addresses authorized to submit threat reports
+    mapping(address => bool) public authorizedReporters;
 
     /// @notice All reports for a given contract address
     mapping(address => ThreatReport[]) private _reportsByContract;
@@ -49,6 +56,8 @@ contract SentinelRegistry {
     );
 
     event ContractBlacklisted(address indexed contractAddress, uint256 aggregateScore);
+    event ReporterAdded(address indexed reporter);
+    event ReporterRemoved(address indexed reporter);
 
     // ─── Errors ───
 
@@ -56,6 +65,46 @@ contract SentinelRegistry {
     error EmptyAttackType();
     error EmptyEvidence();
     error ZeroAddress();
+    error NotOwner();
+    error NotAuthorizedReporter();
+
+    // ─── Modifiers ───
+
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert NotOwner();
+        _;
+    }
+
+    modifier onlyAuthorizedReporter() {
+        if (!authorizedReporters[msg.sender]) revert NotAuthorizedReporter();
+        _;
+    }
+
+    // ─── Constructor ───
+
+    constructor() {
+        owner = msg.sender;
+        authorizedReporters[msg.sender] = true;
+        emit ReporterAdded(msg.sender);
+    }
+
+    // ─── Access Control ───
+
+    /// @notice Authorize an address to submit threat reports
+    /// @param reporter The address to authorize
+    function addReporter(address reporter) external onlyOwner {
+        if (reporter == address(0)) revert ZeroAddress();
+        authorizedReporters[reporter] = true;
+        emit ReporterAdded(reporter);
+    }
+
+    /// @notice Revoke an address's reporting authorization
+    /// @param reporter The address to revoke
+    function removeReporter(address reporter) external onlyOwner {
+        if (reporter == address(0)) revert ZeroAddress();
+        authorizedReporters[reporter] = false;
+        emit ReporterRemoved(reporter);
+    }
 
     // ─── Functions ───
 
@@ -64,9 +113,12 @@ contract SentinelRegistry {
     /// @param threatScore The threat score (1-100) assigned by the reporter
     /// @param attackType Classification of the attack (e.g., "FLASH_LOAN", "REENTRANCY")
     /// @param evidence Transaction hash or description serving as evidence
-    function reportThreat(address targetContract, uint256 threatScore, string calldata attackType, string calldata evidence)
-        external
-    {
+    function reportThreat(
+        address targetContract,
+        uint256 threatScore,
+        string calldata attackType,
+        string calldata evidence
+    ) external onlyAuthorizedReporter {
         if (targetContract == address(0)) revert ZeroAddress();
         if (threatScore == 0 || threatScore > 100) revert InvalidScore();
         if (bytes(attackType).length == 0) revert EmptyAttackType();

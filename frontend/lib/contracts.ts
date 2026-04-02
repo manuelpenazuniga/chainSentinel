@@ -1,14 +1,18 @@
 // Contract addresses — update after deploying to testnet (Steps 1-2)
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
+
 export const VAULT_ADDRESS =
-  (process.env.NEXT_PUBLIC_VAULT_ADDRESS as `0x${string}`) ||
-  "0x0000000000000000000000000000000000000000";
+  (process.env.NEXT_PUBLIC_VAULT_ADDRESS as `0x${string}`) || ZERO_ADDRESS;
 
 export const REGISTRY_ADDRESS =
-  (process.env.NEXT_PUBLIC_REGISTRY_ADDRESS as `0x${string}`) ||
-  "0x0000000000000000000000000000000000000000";
+  (process.env.NEXT_PUBLIC_REGISTRY_ADDRESS as `0x${string}`) || ZERO_ADDRESS;
 
 // Native token represented as address(0)
-export const NATIVE_TOKEN = "0x0000000000000000000000000000000000000000" as const;
+export const NATIVE_TOKEN = ZERO_ADDRESS;
+
+// Check if contracts are properly configured (not zero address fallbacks)
+export const IS_CONFIGURED =
+  !!process.env.NEXT_PUBLIC_VAULT_ADDRESS && !!process.env.NEXT_PUBLIC_REGISTRY_ADDRESS;
 
 export const VAULT_ABI = [
   { type: "constructor", inputs: [{ name: "_safeAddress", type: "address" }, { name: "_threshold", type: "uint256" }], stateMutability: "nonpayable" },
@@ -104,6 +108,10 @@ export const REGISTRY_ABI = [
     }],
     stateMutability: "view",
   },
+  { type: "function", name: "owner", inputs: [], outputs: [{ name: "", type: "address" }], stateMutability: "view" },
+  { type: "function", name: "authorizedReporters", inputs: [{ name: "", type: "address" }], outputs: [{ name: "", type: "bool" }], stateMutability: "view" },
+  { type: "function", name: "addReporter", inputs: [{ name: "reporter", type: "address" }], outputs: [], stateMutability: "nonpayable" },
+  { type: "function", name: "removeReporter", inputs: [{ name: "reporter", type: "address" }], outputs: [], stateMutability: "nonpayable" },
   { type: "function", name: "reportThreat", inputs: [{ name: "targetContract", type: "address" }, { name: "threatScore", type: "uint256" }, { name: "attackType", type: "string" }, { name: "evidence", type: "string" }], outputs: [], stateMutability: "nonpayable" },
   // Events
   { type: "event", name: "ThreatReported", inputs: [{ name: "reporter", type: "address", indexed: true }, { name: "targetContract", type: "address", indexed: true }, { name: "threatScore", type: "uint256", indexed: false }, { name: "attackType", type: "string", indexed: false }, { name: "blockNumber", type: "uint256", indexed: false }] },

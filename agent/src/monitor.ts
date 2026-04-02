@@ -117,40 +117,64 @@ export class Monitor {
       txs.push(txData);
     }
 
-    await this.context.updateWithBlock(blockNumber, txs);
+    const startTime = Date.now();
 
-    // Track contract balances for heuristic rules (DRASTIC_BALANCE_CHANGE, LARGE_WITHDRAWAL)
-    const contractAddresses = new Set(txs.map((tx) => tx.to));
+    // Resolve contract ages (sequential — binary search involves multiple RPC calls per address)
+    const contractAddresses = [...new Set(txs.map((tx) => tx.to))];
     for (const addr of contractAddresses) {
       try {
-        const balance = await this.httpProvider.getBalance(addr, blockNumber);
-        this.context.setBalanceAtBlock(addr, blockNumber, balance);
+        await this.context.resolveContractAge(addr, blockNumber);
       } catch {
-        // Balance fetch may fail for some addresses
+        // Contract age resolution is best-effort
       }
     }
 
-    for (const txData of txs) {
-      if (txData.input.length > 2) {
-        try {
-          const receipt = await this.httpProvider.getTransactionReceipt(
-            txData.hash
-          );
-          if (receipt) {
-            txData.gasUsed = receipt.gasUsed.toString();
+    // Fetch balances in parallel batches of 5
+    for (let i = 0; i < contractAddresses.length; i += 5) {
+      const batch = contractAddresses.slice(i, i + 5);
+      await Promise.all(
+        batch.map(async (addr) => {
+          try {
+            const balance = await this.httpProvider.getBalance(addr, blockNumber);
+            this.context.setBalanceAtBlock(addr, blockNumber, balance);
+          } catch {
+            // Balance fetch may fail for some addresses
           }
-        } catch {
-          // Gas used from gasLimit is an approximation
-        }
-      }
+        })
+      );
     }
 
+    // Fetch receipts in parallel batches of 5 (only for contract calls, not simple transfers)
+    const txsNeedingReceipt = txs.filter((tx) => tx.input.length > 2);
+    for (let i = 0; i < txsNeedingReceipt.length; i += 5) {
+      const batch = txsNeedingReceipt.slice(i, i + 5);
+      await Promise.all(
+        batch.map(async (txData) => {
+          try {
+            const receipt = await this.httpProvider.getTransactionReceipt(txData.hash);
+            if (receipt) {
+              txData.gasUsed = receipt.gasUsed.toString();
+            }
+          } catch {
+            // Gas used from gasLimit is an approximation
+          }
+        })
+      );
+    }
+
+    const elapsed = Date.now() - startTime;
     if (txs.length > 0) {
-      logger.info(`Block ${blockNumber}: ${txs.length} transactions`);
+      logger.info(`Block ${blockNumber}: ${txs.length} transactions (enriched in ${elapsed}ms)`);
     }
 
+    // Run analysis callback BEFORE updating context with this block's txs.
+    // This ensures heuristics (TX_BURST, UNKNOWN_HIGH_VALUE_SENDER) evaluate
+    // each tx against the pre-block state, not contaminated by same-block data.
     if (this.onBlockCallback) {
       await this.onBlockCallback(txs, blockNumber);
     }
+
+    // Update context with this block's data AFTER analysis is complete
+    await this.context.updateWithBlock(blockNumber, txs);
   }
 }
