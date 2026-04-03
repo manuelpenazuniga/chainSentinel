@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { isAddress } from "viem";
 import { useReadContract, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
-import { VAULT_ABI, VAULT_ADDRESS } from "@/lib/contracts";
+import { VAULT_ABI, VAULT_ADDRESS, IS_CONFIGURED } from "@/lib/contracts";
 
 export function GuardianConfig() {
   const [guardianAddr, setGuardianAddr] = useState("");
@@ -127,7 +127,8 @@ export function GuardianConfig() {
           />
           <button
             onClick={handleSetGuardian}
-            disabled={guardianPending || !guardianAddr || !isValidGuardian}
+            disabled={!IS_CONFIGURED || guardianPending || !guardianAddr || !isValidGuardian}
+            title={!IS_CONFIGURED ? "Contract addresses not configured" : undefined}
             className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
           >
             {guardianPending ? "..." : "Set"}
@@ -152,8 +153,8 @@ export function GuardianConfig() {
                   functionName: "removeGuardian",
                 })
               }
-              disabled={removePending}
-              className="text-xs text-red-400 hover:text-red-300"
+              disabled={!IS_CONFIGURED || removePending}
+              className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {removePending ? "Removing..." : "Remove Guardian"}
             </button>
@@ -186,7 +187,8 @@ export function GuardianConfig() {
           />
           <button
             onClick={handleSetThreshold}
-            disabled={thresholdPending || !thresholdValue || !isValidThreshold}
+            disabled={!IS_CONFIGURED || thresholdPending || !thresholdValue || !isValidThreshold}
+            title={!IS_CONFIGURED ? "Contract addresses not configured" : undefined}
             className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-700 hover:bg-gray-600 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {thresholdPending ? "..." : "Update"}
@@ -222,7 +224,8 @@ export function GuardianConfig() {
           />
           <button
             onClick={handleSetSafe}
-            disabled={safePending || !safeAddr || !isValidSafe}
+            disabled={!IS_CONFIGURED || safePending || !safeAddr || !isValidSafe}
+            title={!IS_CONFIGURED ? "Contract addresses not configured" : undefined}
             className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-700 hover:bg-gray-600 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {safePending ? "..." : "Update"}

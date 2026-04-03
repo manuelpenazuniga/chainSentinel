@@ -167,6 +167,11 @@ export class Monitor {
       logger.info(`Block ${blockNumber}: ${txs.length} transactions (enriched in ${elapsed}ms)`);
     }
 
+    // Pre-register flash loan transactions so hasFlashLoanInteraction returns the correct
+    // result during analysis. This must happen before the analysis callback but does not
+    // affect TX_BURST or UNKNOWN_HIGH_VALUE_SENDER (which depend on pre-block state).
+    this.context.preRegisterFlashLoans(txs);
+
     // Run analysis callback BEFORE updating context with this block's txs.
     // This ensures heuristics (TX_BURST, UNKNOWN_HIGH_VALUE_SENDER) evaluate
     // each tx against the pre-block state, not contaminated by same-block data.

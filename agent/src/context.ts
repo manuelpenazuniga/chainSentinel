@@ -143,7 +143,8 @@ export class MonitorContext implements MonitorContextInterface {
 
       // Binary search: find the earliest block where code exists (max 2000 blocks back)
       const searchDepth = 2000;
-      let lo = Math.max(0, currentBlockNumber - searchDepth);
+      const windowStart = Math.max(0, currentBlockNumber - searchDepth);
+      let lo = windowStart;
       let hi = currentBlockNumber;
       let deployBlock = currentBlockNumber;
 
@@ -161,6 +162,14 @@ export class MonitorContext implements MonitorContextInterface {
           // If getCode at historical block fails, narrow search from the other side
           lo = mid + 1;
         }
+      }
+
+      // If deployBlock is at the window boundary, the contract existed before our search
+      // window — we cannot confirm it's fresh. Treat as old to avoid false positives.
+      if (deployBlock === windowStart) {
+        this.contractAges.set(addr, 0);
+        logger.debug(`Contract ${addr}: deploy at or before window start (block ${windowStart}), treating as old`);
+        return;
       }
 
       // Get timestamp of the deploy block
@@ -217,6 +226,20 @@ export class MonitorContext implements MonitorContextInterface {
     const fiveXAvg = avg * 5n;
     if (avg === 0n) return oneDOT;
     return fiveXAvg < oneDOT ? fiveXAvg : oneDOT;
+  }
+
+  /// Pre-register flash loan transactions from the current block before analysis runs.
+  /// This must be called before onBlockCallback so that hasFlashLoanInteraction returns
+  /// the correct result for transactions in the current block.
+  preRegisterFlashLoans(txs: TransactionData[]): void {
+    for (const tx of txs) {
+      if (tx.input.length >= 10) {
+        const selector = tx.input.slice(0, 10);
+        if (FLASH_LOAN_SELECTORS.includes(selector)) {
+          this.flashLoanTxHashes.add(tx.hash);
+        }
+      }
+    }
   }
 
   hasFlashLoanInteraction(txHash: string): boolean {

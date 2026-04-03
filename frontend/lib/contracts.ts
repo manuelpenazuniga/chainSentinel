@@ -10,9 +10,12 @@ export const REGISTRY_ADDRESS =
 // Native token represented as address(0)
 export const NATIVE_TOKEN = ZERO_ADDRESS;
 
-// Check if contracts are properly configured (not zero address fallbacks)
+// Check if contracts are properly configured (env vars set and not zero address fallbacks)
 export const IS_CONFIGURED =
-  !!process.env.NEXT_PUBLIC_VAULT_ADDRESS && !!process.env.NEXT_PUBLIC_REGISTRY_ADDRESS;
+  !!process.env.NEXT_PUBLIC_VAULT_ADDRESS &&
+  !!process.env.NEXT_PUBLIC_REGISTRY_ADDRESS &&
+  process.env.NEXT_PUBLIC_VAULT_ADDRESS !== ZERO_ADDRESS &&
+  process.env.NEXT_PUBLIC_REGISTRY_ADDRESS !== ZERO_ADDRESS;
 
 export const VAULT_ABI = [
   { type: "constructor", inputs: [{ name: "_safeAddress", type: "address" }, { name: "_threshold", type: "uint256" }], stateMutability: "nonpayable" },

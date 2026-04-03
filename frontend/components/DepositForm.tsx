@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { parseEther } from "viem";
 import { useWriteContract, useWaitForTransactionReceipt } from "wagmi";
-import { VAULT_ABI, VAULT_ADDRESS } from "@/lib/contracts";
+import { VAULT_ABI, VAULT_ADDRESS, IS_CONFIGURED } from "@/lib/contracts";
 
 export function DepositForm() {
   const [amount, setAmount] = useState("");
@@ -62,7 +62,8 @@ export function DepositForm() {
 
         <button
           type="submit"
-          disabled={isPending || isConfirming || !amount || parseFloat(amount) <= 0}
+          disabled={!IS_CONFIGURED || isPending || isConfirming || !amount || parseFloat(amount) <= 0}
+          title={!IS_CONFIGURED ? "Contract addresses not configured" : undefined}
           className="w-full py-2.5 px-4 rounded-lg font-medium text-sm bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {isPending

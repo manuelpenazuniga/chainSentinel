@@ -126,7 +126,7 @@ chainsentinel/
 │   │   ├── llm.ts                  # Gemini API integration
 │   │   ├── agentkit.ts             # Polkadot Agent Kit wrapper
 │   │   └── types.ts                # Shared interfaces
-│   └── test/                       # 9 agent tests (Vitest)
+│   └── test/                       # 12 agent tests (Vitest)
 ├── frontend/                   # Next.js 16 Dashboard
 │   ├── app/                        # 3 pages (dashboard, protect, registry)
 │   ├── components/                 # 9 components (charts, forms, feeds)
@@ -191,10 +191,10 @@ Get testnet PAS from [faucet.polkadot.io](https://faucet.polkadot.io/) — selec
 ## Testing
 
 ```bash
-# Smart contract tests (48 tests)
+# Smart contract tests (60 tests)
 cd contracts && forge test -v
 
-# AI agent tests (9 tests)
+# AI agent tests (12 tests)
 cd agent && npx vitest run
 
 # Agent type-check

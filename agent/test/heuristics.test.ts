@@ -10,6 +10,7 @@ function createMockContext(overrides: Partial<MonitorContextInterface> = {}): Mo
     getSignificantThreshold: () => 1000000000000000000n, // 1 DOT
     hasFlashLoanInteraction: () => false,
     isBlacklisted: () => false,
+    isWhitelisted: () => false,
     getBalanceBefore: () => 100000000000000000000n, // 100 DOT
     getBalanceAfter: () => 100000000000000000000n, // 100 DOT (no change)
     hasPreviousInteraction: () => true,
@@ -111,5 +112,35 @@ describe("Heuristic Engine", () => {
 
   it("should have exactly 8 rules", () => {
     expect(HEURISTIC_RULES).toHaveLength(8);
+  });
+
+  it("should not alter score when contract is not whitelisted", () => {
+    const tx = createMockTx({ value: "20000000000000000000" }); // triggers ANOMALOUS_VALUE (+35)
+    const ctx = createMockContext({ isWhitelisted: () => false });
+    const result = calculateHeuristicScore(tx, ctx);
+    expect(result.score).toBe(35);
+  });
+
+  it("should reduce score by 50% when target contract is whitelisted", () => {
+    const tx = createMockTx({ value: "20000000000000000000" }); // triggers ANOMALOUS_VALUE (+35)
+    const ctx = createMockContext({ isWhitelisted: () => true });
+    const result = calculateHeuristicScore(tx, ctx);
+    expect(result.score).toBe(17); // Math.floor(35 * 0.5)
+  });
+
+  it("should still respect cap of 100 after whitelist reduction", () => {
+    const tx = createMockTx({
+      value: "20000000000000000000",
+      input: "0xab9c4b5d0000000000",
+    });
+    const ctx = createMockContext({
+      getContractAge: () => 3600,
+      isBlacklisted: () => true,
+      isWhitelisted: () => true,
+      getRecentTxs: () => Array(5).fill(tx),
+    });
+    const result = calculateHeuristicScore(tx, ctx);
+    expect(result.score).toBeLessThanOrEqual(100);
+    expect(result.score).toBeGreaterThan(0);
   });
 });
