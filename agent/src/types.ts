@@ -30,6 +30,8 @@ export interface HeuristicResult {
   score: number;
   triggeredRules: string[];
   details: Array<{ rule: string; triggered: boolean; score: number }>;
+  /** Extra score added when multiple rules form a known dangerous combination. */
+  correlationBonus: number;
 }
 
 // ─── LLM Analysis ───
@@ -41,6 +43,8 @@ export interface LLMAnalysis {
   attackType: AttackType;
   explanation: string;
   recommendedAction: RecommendedAction;
+  /** Step-by-step chain-of-thought produced by the model before reaching the score. */
+  reasoning?: string;
 }
 
 export type ThreatClassification = "NORMAL" | "SUSPICIOUS" | "PROBABLE_THREAT" | "CRITICAL_THREAT";
@@ -50,6 +54,7 @@ export type AttackType =
   | "FLASH_LOAN"
   | "REENTRANCY"
   | "PRICE_MANIPULATION"
+  | "SANDWICH"
   | "DRAIN"
   | "ACCESS_CONTROL"
   | "UNKNOWN";
@@ -90,6 +95,12 @@ export interface MonitorContextInterface {
   getBalance(contractAddress: string): bigint;
   getBalanceChange(contractAddress: string, blockNumber: number): number;
   getRecentTxCount(from: string, to: string, withinBlocks: number): number;
+  /**
+   * Returns the historical average ERC-20 transfer amount (decoded from calldata)
+   * observed for transactions sent TO the given contract address.
+   * Returns 0n when no ERC-20 transfers have been recorded yet.
+   */
+  getHistoricalAvgERC20Value(contractAddress: string): bigint;
 }
 
 // ─── Agent Configuration ───

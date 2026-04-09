@@ -10,6 +10,32 @@ const FLASH_LOAN_SELECTORS = [
   "0xd9d98ce4", // flashBorrow
 ];
 
+// ERC-20 selectors whose calldata encodes a token amount we can decode.
+const ERC20_TRANSFER_SELECTORS: Record<string, { amountOffset: number }> = {
+  "0xa9059cbb": { amountOffset: 64 },  // transfer(address,uint256)      — 2nd param
+  "0x23b872dd": { amountOffset: 128 }, // transferFrom(address,address,uint256) — 3rd param
+};
+
+/**
+ * Attempt to decode the token amount from ERC-20 transfer/transferFrom calldata.
+ * Returns null when the calldata does not match the expected ABI layout.
+ */
+function decodeERC20Amount(input: string): bigint | null {
+  if (input.length < 10) return null;
+  const selector = input.slice(0, 10);
+  const info = ERC20_TRANSFER_SELECTORS[selector];
+  if (!info) return null;
+  const params = input.slice(10); // hex without 0x and selector
+  const end = info.amountOffset + 64;
+  if (params.length < end) return null;
+  try {
+    const hex = params.slice(info.amountOffset, end);
+    return BigInt("0x" + hex);
+  } catch {
+    return null;
+  }
+}
+
 class CircularBuffer<T> {
   private buffer: T[];
   private head: number = 0;
@@ -42,6 +68,8 @@ class CircularBuffer<T> {
 
 export class MonitorContext implements MonitorContextInterface {
   private avgValues: Map<string, { total: bigint; count: number }> = new Map();
+  /** Rolling average of decoded ERC-20 transfer amounts per contract address. */
+  private avgERC20Values: Map<string, { total: bigint; count: number }> = new Map();
   private contractAges: Map<string, number> = new Map();
   private recentTxBuffer: CircularBuffer<TransactionData>;
   private blacklist: Set<string> = new Set();
@@ -77,6 +105,12 @@ export class MonitorContext implements MonitorContextInterface {
       this.updateAvgValue(toLower, BigInt(tx.value));
       this.recentTxBuffer.push(tx);
       this.interactionHistory.add(`${fromLower}:${toLower}`);
+
+      // Track ERC-20 transfer amounts decoded from calldata (independent of tx.value)
+      const erc20Amount = decodeERC20Amount(tx.input);
+      if (erc20Amount !== null && erc20Amount > 0n) {
+        this.updateAvgERC20Value(toLower, erc20Amount);
+      }
 
       // Track flash loan interactions by tx hash
       if (tx.input.length >= 10) {
@@ -195,6 +229,12 @@ export class MonitorContext implements MonitorContextInterface {
     return data.total / BigInt(data.count);
   }
 
+  getHistoricalAvgERC20Value(contractAddress: string): bigint {
+    const data = this.avgERC20Values.get(contractAddress.toLowerCase());
+    if (!data || data.count === 0) return 0n;
+    return data.total / BigInt(data.count);
+  }
+
   getContractAge(contractAddress: string): number | null {
     const deployTime = this.contractAges.get(contractAddress.toLowerCase());
     if (deployTime === undefined) return null;
@@ -308,6 +348,20 @@ export class MonitorContext implements MonitorContextInterface {
       }
     } else {
       this.avgValues.set(contractAddress, { total: value, count: 1 });
+    }
+  }
+
+  private updateAvgERC20Value(contractAddress: string, amount: bigint): void {
+    const existing = this.avgERC20Values.get(contractAddress);
+    if (existing) {
+      if (existing.count >= 100) {
+        existing.total = existing.total - (existing.total / BigInt(existing.count)) + amount;
+      } else {
+        existing.total += amount;
+        existing.count++;
+      }
+    } else {
+      this.avgERC20Values.set(contractAddress, { total: amount, count: 1 });
     }
   }
 
