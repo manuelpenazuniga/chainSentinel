@@ -134,16 +134,23 @@ contracts/out/
 ### Prerequisites
 
 ```bash
-# 1. Install resolc (pre-built binary for macOS/Linux)
-curl -L https://github.com/paritytech/revive/releases/latest/download/resolc-x86_64-apple-darwin \
-  -o /usr/local/bin/resolc && chmod +x /usr/local/bin/resolc
+# 1. Install resolc (pre-built binary)
+#    v1.1.0+ ships a Universal Binary for macOS (ARM64 + x86_64 native, no Rosetta needed)
+mkdir -p ~/.local/bin
 
-# For Linux x86_64:
+# macOS (Apple Silicon or Intel — Universal Binary):
+curl -L https://github.com/paritytech/revive/releases/latest/download/resolc-universal-apple-darwin \
+  -o ~/.local/bin/resolc && chmod +x ~/.local/bin/resolc
+
+# Linux x86_64:
 # curl -L https://github.com/paritytech/revive/releases/latest/download/resolc-x86_64-unknown-linux-musl \
-#   -o /usr/local/bin/resolc && chmod +x /usr/local/bin/resolc
+#   -o ~/.local/bin/resolc && chmod +x ~/.local/bin/resolc
+
+# Add to PATH if needed:
+export PATH="$HOME/.local/bin:$PATH"
 
 # 2. Verify
-resolc --version
+resolc --version    # expect: Solidity frontend for the revive compiler version 1.1.0+...
 
 # 3. Install Foundry (for cast)
 curl -L https://foundry.paradigm.xyz | bash && foundryup
@@ -151,20 +158,41 @@ curl -L https://foundry.paradigm.xyz | bash && foundryup
 
 ### Compile Manually
 
+> **Note:** resolc v1.1.0+ dropped the standalone `--abi` / `--bin` flags.
+> Use `--combined-json abi,bin` and extract with Python (or `jq`).
+> Both contracts must be compiled in a single invocation so `combined.json` contains both.
+
 ```bash
 mkdir -p contracts/out/pvm
 
-# Compile SentinelRegistryPVM (no imports — simplest, validate resolc setup first)
-resolc contracts/pvm/SentinelRegistryPVM.sol \
-  --abi --bin \
-  --output-dir contracts/out/pvm/ \
+# Locate solc (used by resolc as Solidity frontend)
+# If installed via svm:
+SOLC="$HOME/Library/Application Support/svm/0.8.20/solc-0.8.20"
+# Or: SOLC=$(which solc)
+
+# Compile both PVM contracts in one invocation
+resolc \
+  contracts/pvm/SentinelRegistryPVM.sol \
+  contracts/pvm/SentinelVaultPVM.sol \
+  --solc "$SOLC" \
+  --combined-json abi,bin \
+  -o contracts/out/pvm/ \
   --overwrite
 
-# Compile SentinelVaultPVM
-resolc contracts/pvm/SentinelVaultPVM.sol \
-  --abi --bin \
-  --output-dir contracts/out/pvm/ \
-  --overwrite
+# Extract separate .bin and .abi files from combined.json
+python3 -c "
+import json
+with open('contracts/out/pvm/combined.json') as f:
+    d = json.load(f)
+for k, v in d['contracts'].items():
+    name = k.split(':')[-1]
+    if name not in ['SentinelVaultPVM', 'SentinelRegistryPVM'] or 'bin' not in v:
+        continue
+    open(f'contracts/out/pvm/{name}.bin', 'w').write(v['bin'])
+    abi = v['abi'] if isinstance(v['abi'], str) else json.dumps(v['abi'])
+    open(f'contracts/out/pvm/{name}.abi', 'w').write(abi)
+    print(f'{name}: {len(v[\"bin\"]) // 2:,} bytes')
+"
 
 # Inspect output
 ls -lh contracts/out/pvm/

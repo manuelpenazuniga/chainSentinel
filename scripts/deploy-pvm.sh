@@ -22,13 +22,18 @@
 #
 # Installing resolc:
 #   Option A — Pre-built binary (fastest):
-#     curl -L https://github.com/paritytech/revive/releases/latest/download/resolc-x86_64-apple-darwin \
-#       -o /usr/local/bin/resolc && chmod +x /usr/local/bin/resolc
+#     # macOS Universal (ARM64 + x86_64 — works on Apple Silicon natively):
+#     curl -L https://github.com/paritytech/revive/releases/latest/download/resolc-universal-apple-darwin \
+#       -o ~/.local/bin/resolc && chmod +x ~/.local/bin/resolc
+#
+#     # Linux x86_64:
+#     curl -L https://github.com/paritytech/revive/releases/latest/download/resolc-x86_64-unknown-linux-musl \
+#       -o ~/.local/bin/resolc && chmod +x ~/.local/bin/resolc
 #
 #   Option B — Build from source (requires Rust + LLVM):
 #     git clone https://github.com/paritytech/revive
 #     cd revive && cargo build --release
-#     cp target/release/resolc /usr/local/bin/resolc
+#     cp target/release/resolc ~/.local/bin/resolc
 #
 #   Verify: resolc --version
 #
@@ -113,42 +118,96 @@ DEPLOYER_BALANCE=$(cast balance "$DEPLOYER_ADDRESS" --rpc-url "$RPC_URL" --ether
 info "Deployer balance: $DEPLOYER_BALANCE PAS"
 
 # ─── Compilation ─────────────────────────────────────────────────────────────
+#
+# resolc v1.1.0 changed its CLI:
+#   - The standalone --abi and --bin flags were removed.
+#   - Use --combined-json abi,bin to emit a single JSON artifact, then extract
+#     the .bin and .abi files with Python for compatibility with cast.
+#   - Both contracts are compiled in a single invocation so combined.json
+#     contains both (separate invocations overwrite each other).
+#
+# Requires --solc to point at a solc binary. We auto-detect from svm cache.
 
 header "2. Compiling with resolc (PolkaVM target)"
 
 mkdir -p "$PVM_OUT"
 
-# Compile SentinelRegistryPVM
-# No external imports — simplest case, used to validate resolc setup.
-info "Compiling SentinelRegistryPVM.sol..."
-resolc "$PVM_SRC/SentinelRegistryPVM.sol" \
-  --abi \
-  --bin \
-  --output-dir "$PVM_OUT" \
+# Locate solc binary (foundry svm cache)
+SOLC_BIN=""
+SVM_SOLC="$HOME/Library/Application Support/svm/0.8.20/solc-0.8.20"
+if [[ -f "$SVM_SOLC" ]]; then
+  SOLC_BIN="$SVM_SOLC"
+elif command -v solc &> /dev/null; then
+  SOLC_BIN=$(which solc)
+fi
+
+SOLC_FLAG=()
+if [[ -n "$SOLC_BIN" ]]; then
+  SOLC_FLAG=(--solc "$SOLC_BIN")
+  info "Using solc at: $SOLC_BIN"
+else
+  warn "solc not found in svm cache or PATH. resolc will search PATH."
+fi
+
+# Compile both contracts in one invocation → combined.json
+info "Compiling SentinelRegistryPVM.sol + SentinelVaultPVM.sol..."
+resolc \
+  "$PVM_SRC/SentinelRegistryPVM.sol" \
+  "$PVM_SRC/SentinelVaultPVM.sol" \
+  "${SOLC_FLAG[@]}" \
+  --combined-json abi,bin \
+  -o "$PVM_OUT" \
   --overwrite \
   2>&1 | while IFS= read -r line; do warn "  resolc: $line"; done
+
+if [[ ! -f "$PVM_OUT/combined.json" ]]; then
+  error "resolc did not produce combined.json. Check resolc output above."
+  exit 1
+fi
+
+# Extract separate .bin and .abi files from combined.json
+info "Extracting .bin and .abi from combined.json..."
+python3 << PYEOF
+import json, sys
+
+with open("$PVM_OUT/combined.json") as f:
+    data = json.load(f)
+
+targets = {"SentinelVaultPVM", "SentinelRegistryPVM"}
+found = set()
+
+for key, val in data["contracts"].items():
+    name = key.split(":")[-1]
+    if name not in targets:
+        continue
+    if "bin" not in val or not val["bin"]:
+        print(f"  WARNING: no bytecode for {name}", file=sys.stderr)
+        continue
+    with open(f"$PVM_OUT/{name}.bin", "w") as f:
+        f.write(val["bin"])
+    abi_str = val["abi"] if isinstance(val["abi"], str) else json.dumps(val["abi"])
+    with open(f"$PVM_OUT/{name}.abi", "w") as f:
+        f.write(abi_str)
+    found.add(name)
+    print(f"  {name}: {len(val['bin']) // 2:,} bytes")
+
+missing = targets - found
+if missing:
+    print(f"ERROR: missing contracts: {missing}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
 
 if [[ ! -f "$PVM_OUT/SentinelRegistryPVM.bin" ]]; then
-  error "Compilation of SentinelRegistryPVM.sol failed. Check resolc output above."
+  error "Extraction of SentinelRegistryPVM.bin failed."
   exit 1
 fi
-success "SentinelRegistryPVM.sol compiled → $(wc -c < "$PVM_OUT/SentinelRegistryPVM.bin") bytes"
-
-# Compile SentinelVaultPVM
-# Self-contained (no imports) — inline IERC20, inline ReentrancyGuard.
-info "Compiling SentinelVaultPVM.sol..."
-resolc "$PVM_SRC/SentinelVaultPVM.sol" \
-  --abi \
-  --bin \
-  --output-dir "$PVM_OUT" \
-  --overwrite \
-  2>&1 | while IFS= read -r line; do warn "  resolc: $line"; done
-
 if [[ ! -f "$PVM_OUT/SentinelVaultPVM.bin" ]]; then
-  error "Compilation of SentinelVaultPVM.sol failed. Check resolc output above."
+  error "Extraction of SentinelVaultPVM.bin failed."
   exit 1
 fi
-success "SentinelVaultPVM.sol compiled → $(wc -c < "$PVM_OUT/SentinelVaultPVM.bin") bytes"
+
+success "SentinelRegistryPVM.sol compiled → $(wc -c < "$PVM_OUT/SentinelRegistryPVM.bin") hex chars"
+success "SentinelVaultPVM.sol compiled → $(wc -c < "$PVM_OUT/SentinelVaultPVM.bin") hex chars"
 
 # ─── ABI Diff Sanity Check ────────────────────────────────────────────────────
 # The PVM ABI must be functionally equivalent to the REVM ABI.

@@ -38,10 +38,13 @@ pragma solidity ^0.8.20;
 //   Assembly     — not present (removed SafeERC20 dependency)
 // ============================================================================
 
-// ─── Inline IERC20 ───────────────────────────────────────────────────────────
+// ─── Inline ERC-20 interface ─────────────────────────────────────────────────
+// Named IERC20Minimal to avoid identifier collision when this file is compiled
+// alongside OpenZeppelin (e.g. in Foundry tests). When compiled standalone with
+// resolc for PVM deployment, no such conflict exists.
 // Only the two functions used by this contract. Identical to ERC-20 standard.
 
-interface IERC20 {
+interface IERC20Minimal {
     function transfer(address to, uint256 amount) external returns (bool);
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
 }
@@ -174,7 +177,7 @@ contract SentinelVaultPVM {
     /// @param amount The amount to deposit
     function deposit(address token, uint256 amount) external onlyOwner nonReentrant {
         if (amount == 0) revert ZeroAmount();
-        bool ok = IERC20(token).transferFrom(msg.sender, address(this), amount);
+        bool ok = IERC20Minimal(token).transferFrom(msg.sender, address(this), amount);
         if (!ok) revert ERC20TransferFailed(token);
         if (!supportedTokens[token]) {
             supportedTokens[token] = true;
@@ -201,7 +204,7 @@ contract SentinelVaultPVM {
             (bool sent,) = payable(owner).call{value: amount}("");
             require(sent, "Native transfer failed");
         } else {
-            bool ok = IERC20(token).transfer(owner, amount);
+            bool ok = IERC20Minimal(token).transfer(owner, amount);
             if (!ok) revert ERC20TransferFailed(token);
         }
         emit Withdrawn(msg.sender, token, amount);
@@ -289,7 +292,7 @@ contract SentinelVaultPVM {
             (bool sent,) = payable(safeAddress).call{value: amount}("");
             require(sent, "Native transfer failed");
         } else {
-            bool ok = IERC20(token).transfer(safeAddress, amount);
+            bool ok = IERC20Minimal(token).transfer(safeAddress, amount);
             if (!ok) revert ERC20TransferFailed(token);
         }
 
@@ -326,7 +329,7 @@ contract SentinelVaultPVM {
             uint256 amount = balances[token];
             if (amount > 0) {
                 balances[token] = 0;
-                bool ok = IERC20(token).transfer(safeAddress, amount);
+                bool ok = IERC20Minimal(token).transfer(safeAddress, amount);
                 if (!ok) revert ERC20TransferFailed(token);
                 emit EmergencyWithdrawExecuted(msg.sender, token, amount, threatScore, reason);
             }
@@ -336,6 +339,7 @@ contract SentinelVaultPVM {
     // ─── View Functions ───────────────────────────────────────────────────────
 
     /// @notice Get the overall vault status
+    /// @dev Return type matches SentinelVault.sol exactly for ABI equivalence.
     function getVaultStatus()
         external
         view
@@ -346,10 +350,20 @@ contract SentinelVaultPVM {
             uint256 _threshold,
             uint256 _cooldownBlocks,
             uint256 _lastEmergencyBlock,
-            uint256 _nativeBalance
+            uint256 _tokenCount,
+            bool _isProtected
         )
     {
-        return (owner, guardian, safeAddress, threshold, cooldownBlocks, lastEmergencyBlock, balances[address(0)]);
+        return (
+            owner,
+            guardian,
+            safeAddress,
+            threshold,
+            cooldownBlocks,
+            lastEmergencyBlock,
+            tokenList.length,
+            guardian != address(0)
+        );
     }
 
     /// @notice Get the balance of a specific token in the vault
@@ -358,9 +372,23 @@ contract SentinelVaultPVM {
         return balances[token];
     }
 
-    /// @notice Check if the vault has a guardian and meets configuration requirements
-    function isProtected() external view returns (bool) {
-        return guardian != address(0) && safeAddress != address(0);
+    /// @notice Get all token balances in the vault
+    /// @return tokens Array of token addresses (index 0 is native token address(0))
+    /// @return amounts Array of corresponding balances
+    function getAllBalances() external view returns (address[] memory tokens, uint256[] memory amounts) {
+        uint256 len = tokenList.length;
+        tokens = new address[](len + 1);
+        amounts = new uint256[](len + 1);
+
+        // Native token at index 0
+        tokens[0] = address(0);
+        amounts[0] = balances[address(0)];
+
+        // ERC-20 tokens
+        for (uint256 i = 0; i < len; i++) {
+            tokens[i + 1] = tokenList[i];
+            amounts[i + 1] = balances[tokenList[i]];
+        }
     }
 
     /// @notice Check if a contract is whitelisted
@@ -372,5 +400,10 @@ contract SentinelVaultPVM {
     /// @notice Get the total number of tracked ERC-20 tokens
     function getTokenCount() external view returns (uint256) {
         return tokenList.length;
+    }
+
+    /// @notice Check if the cooldown period is active
+    function isCooldownActive() external view returns (bool) {
+        return block.number < lastEmergencyBlock + cooldownBlocks;
     }
 }
