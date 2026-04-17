@@ -1,7 +1,7 @@
 import { ethers } from "ethers";
 import { createClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws";
-import { paseoAssetHubChain, formatBalance } from "@polkadot-agent-kit/common";
+import { paseoAssetHubChain } from "@polkadot-agent-kit/common";
 import { fromBufferToBase58 } from "@polkadot-api/substrate-bindings";
 import { createLogger } from "./logger.js";
 import { AgentConfig } from "./types.js";
@@ -255,6 +255,11 @@ export class AgentKitWrapper {
     }
   }
 
+  /** Expose the Substrate client for modules that need direct access (e.g. XCM monitor). */
+  getSubstrateClient(): ReturnType<typeof createClient> | null {
+    return this.substrateConnected ? this.substrateClient : null;
+  }
+
   // ─── Substrate Queries ───────────────────────────────────────────────────
 
   /**
@@ -321,10 +326,11 @@ export class AgentKitWrapper {
 
       if (!account) return null;
 
+      const data = (account as { data?: { free?: unknown; reserved?: unknown; frozen?: unknown } }).data;
       return {
-        free: BigInt(account.data?.free ?? 0),
-        reserved: BigInt(account.data?.reserved ?? 0),
-        frozen: BigInt(account.data?.frozen ?? 0),
+        free: BigInt((data?.free as string | number | bigint) ?? 0),
+        reserved: BigInt((data?.reserved as string | number | bigint) ?? 0),
+        frozen: BigInt((data?.frozen as string | number | bigint) ?? 0),
       };
     } catch (err) {
       logger.debug(`Substrate balance query failed for ${addr} (ss58=${ss58}): ${(err as Error).message}`);

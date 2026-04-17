@@ -290,6 +290,10 @@ export class MonitorContext implements MonitorContextInterface {
     return this.blacklist.has(address.toLowerCase());
   }
 
+  getBlacklistSet(): Set<string> {
+    return this.blacklist;
+  }
+
   isWhitelisted(address: string): boolean {
     return this.whitelistedContracts.has(address.toLowerCase());
   }

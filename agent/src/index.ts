@@ -5,6 +5,8 @@ import { Monitor } from "./monitor.js";
 import { analyzeTransaction } from "./analyzer.js";
 import { Executor } from "./executor.js";
 import { Alerter } from "./alerter.js";
+import { XcmMonitor } from "./xcm-monitor.js";
+import { AgentKitWrapper } from "./agentkit.js";
 import { createLogger } from "./logger.js";
 import { ethers } from "ethers";
 
@@ -63,6 +65,37 @@ async function main(): Promise<void> {
   const executor = new Executor(config);
   const alerter = new Alerter(config);
 
+  // ─── XCM Monitor (Substrate layer) ──────────────────────────────────────
+  let xcmMonitor: XcmMonitor | null = null;
+
+  if (config.wsUrl) {
+    try {
+      const agentKit = new AgentKitWrapper(config);
+      await agentKit.initSubstrate();
+      const subClient = agentKit.getSubstrateClient();
+      if (subClient) {
+        xcmMonitor = new XcmMonitor(subClient, context.getBlacklistSet());
+        await xcmMonitor.start(async (threat) => {
+          logger.info(
+            `[XCM] Threat: score=${threat.threatScore} class=${threat.classification} ` +
+            `origin=${threat.transfer.origin.slice(0, 16)}... ` +
+            `reasons=[${threat.reasons.join("; ")}]`
+          );
+          await alerter.sendAlert({
+            type: "THREAT_DETECTED",
+            message: `XCM threat detected! Score: ${threat.threatScore}/100 — ${threat.reasons.join("; ")}`,
+            timestamp: Date.now(),
+          });
+        });
+        logger.info("XCM monitor active — cross-chain transfers are being watched");
+      }
+    } catch (err) {
+      logger.warn(`XCM monitor failed to start (non-fatal): ${(err as Error).message}`);
+    }
+  } else {
+    logger.info("WS_URL not set — XCM monitoring disabled (EVM-only mode)");
+  }
+
   await alerter.sendAlert({
     type: "AGENT_STARTED",
     message: `ChainSentinel agent started. Monitoring vault ${config.vaultAddress}`,
@@ -79,6 +112,12 @@ async function main(): Promise<void> {
         `Assessment for tx ${tx.hash}: score=${assessment.score}, ` +
         `classification=${assessment.classification}, action=${assessment.recommendedAction}`
       );
+
+      // Cross-layer correlation: register high-score senders with XCM monitor
+      if (assessment.score >= 30 && xcmMonitor) {
+        xcmMonitor.registerEvmThreatAddress(tx.from);
+        if (tx.to) xcmMonitor.registerEvmThreatAddress(tx.to);
+      }
 
       if (assessment.score >= 30) {
         await alerter.sendAlert({
@@ -111,6 +150,7 @@ async function main(): Promise<void> {
 
   const shutdown = async () => {
     logger.info("Shutting down...");
+    if (xcmMonitor) await xcmMonitor.stop();
     await monitor.stop();
     await alerter.sendAlert({
       type: "AGENT_STOPPED",
