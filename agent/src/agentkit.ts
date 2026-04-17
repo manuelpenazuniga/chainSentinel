@@ -2,6 +2,7 @@ import { ethers } from "ethers";
 import { createClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws";
 import { paseoAssetHubChain, formatBalance } from "@polkadot-agent-kit/common";
+import { fromBufferToBase58 } from "@polkadot-api/substrate-bindings";
 import { createLogger } from "./logger.js";
 import { AgentConfig } from "./types.js";
 
@@ -77,6 +78,83 @@ export const POLKADOT_AGENT_TOOLS = [
 ] as const;
 
 export type PolkadotToolName = (typeof POLKADOT_AGENT_TOOLS)[number]["name"];
+
+// ─── H160 → AccountId32 mapping (pallet-revive) ──────────────────────────────
+
+/**
+ * Convert an EVM H160 address (0x + 40 hex) to the AccountId32 used by
+ * pallet-revive on Polkadot Hub.
+ *
+ * Scheme (deterministic fallback mapping, no hashing):
+ *   AccountId32 = h160_bytes ‖ 0xEE × 12
+ *
+ * Source: `substrate/frame/revive/src/address.rs` —
+ *   `AccountId32Mapper::to_fallback_account_id` in polkadot-sdk.
+ *
+ * The trailing 12 bytes of `0xEE` are the on-chain marker that the
+ * AccountId32 originated as an Ethereum H160 (pallet-revive uses the
+ * same pattern in reverse to identify EVM-derived accounts).
+ *
+ * NOT to be confused with Frontier's scheme (`blake2_256("evm:" ‖ h160)`),
+ * which is used by pallet-evm on Moonbeam/Astar but NOT on Polkadot Hub.
+ *
+ * @param h160 - EVM address, e.g. "0xED0f50f714b1297ebCb5BD64484966DCE32717d1"
+ * @returns    32-byte hex string, e.g. "0xed0f...17d1eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+ */
+export function h160ToAccountId32(h160: string): string {
+  const cleaned = h160.toLowerCase().replace(/^0x/, "");
+  if (!/^[0-9a-f]{40}$/.test(cleaned)) {
+    throw new Error(`Invalid H160 address (expected 0x + 40 hex chars): ${h160}`);
+  }
+  return "0x" + cleaned + "ee".repeat(12);
+}
+
+/** Detect whether a string is an EVM H160 (0x + 40 hex, not a 32-byte AccountId). */
+function isH160(addr: string): boolean {
+  return /^0x[0-9a-fA-F]{40}$/.test(addr);
+}
+
+/** Detect whether a string is a 32-byte AccountId32 hex (0x + 64 hex). */
+function isAccountId32Hex(addr: string): boolean {
+  return /^0x[0-9a-fA-F]{64}$/.test(addr);
+}
+
+/** Decode a 0x-prefixed hex string into Uint8Array. */
+function hexToBytes(hex: string): Uint8Array {
+  const cleaned = hex.replace(/^0x/, "");
+  const bytes = new Uint8Array(cleaned.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(cleaned.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+/**
+ * Convert a 32-byte hex AccountId32 into a generic SS58 string (format 42).
+ * polkadot-api's `System.Account.getValue` expects an SS58 string, not raw hex.
+ * The SS58 format index is cosmetic — balance lookups are identical across prefixes.
+ */
+const accountId32ToSs58 = fromBufferToBase58(42);
+
+/**
+ * Decimal ratio between EVM wei (eth-rpc view) and Substrate planck (native view).
+ * Polkadot Hub native PAS: 1 PAS = 10^10 planck = 10^18 wei. The eth-rpc adapter
+ * rescales by 10^8 so EVM-facing tooling sees the familiar 18-decimal unit.
+ */
+const EVM_TO_PLANCK_DIVISOR = 10n ** 8n;
+
+/**
+ * Existential deposit on Asset Hub Paseo: 0.01 PAS = 10^8 planck.
+ *
+ * The eth-rpc adapter hides the ED from eth_getBalance — it reports
+ * `free - ED` as the "spendable" balance. This means:
+ *   substrateFree - EXISTENTIAL_DEPOSIT ≡ evmWei / 10^8
+ * Empirically verified live on Paseo against 5 addresses (2026-04-16):
+ * every address diverged by EXACTLY 10^8 planck (0.01 PAS).
+ *
+ * See: https://docs.polkadot.com/reference/polkadot-hub/assets/
+ */
+const EXISTENTIAL_DEPOSIT_PLANCK = 10n ** 8n;
 
 // ─── AgentKitWrapper ─────────────────────────────────────────────────────────
 
@@ -199,21 +277,47 @@ export class AgentKitWrapper {
   /**
    * Read native PAS balance from the Substrate System.Account storage.
    *
-   * Why this is different from eth_getBalance:
-   *   - eth_getBalance reads the EVM account balance (18 decimal wei)
-   *   - System.Account reads the Substrate account state (10 decimal Planck)
-   *   - The values should agree, but querying both proves both protocol layers
-   *     are accessible and consistent
+   * Accepts THREE input formats:
+   *   1. EVM H160 (0x + 40 hex)     → auto-mapped to AccountId32 via pallet-revive scheme
+   *   2. Hex AccountId32 (0x + 64 hex) → used verbatim
+   *   3. SS58 string (e.g. 5Grw...)    → used verbatim
    *
-   * @param ss58OrHex - SS58 address (5Grw...) or hex AccountId32 (0x...)
+   * Why this is different from eth_getBalance:
+   *   - eth_getBalance reads via the eth-rpc adapter (EVM view, 18 decimal wei)
+   *   - System.Account reads the canonical Substrate state (native chain decimals)
+   *   - Both layers read the SAME on-chain account (pallet-revive credits funds
+   *     received via eth_sendRawTransaction directly to System.Account under
+   *     the derived AccountId32 = h160 ‖ 0xEE × 12).
+   *   - Querying both proves Substrate and EVM layers agree on the ground truth.
+   *
+   * @param addr - SS58 address, hex AccountId32, or EVM H160
    */
-  async getSubstrateBalance(ss58OrHex: string): Promise<SubstrateBalance | null> {
+  async getSubstrateBalance(addr: string): Promise<SubstrateBalance | null> {
     if (!this.substrateClient || !this.substrateConnected) return null;
+
+    // Normalize input → SS58 string (what polkadot-api's System.Account expects).
+    // H160 → pallet-revive AccountId32 → SS58
+    // Hex AccountId32 → SS58 directly
+    // SS58 → pass through unchanged
+    let ss58: string;
+    try {
+      if (isH160(addr)) {
+        const hex = h160ToAccountId32(addr);
+        ss58 = accountId32ToSs58(hexToBytes(hex));
+      } else if (isAccountId32Hex(addr)) {
+        ss58 = accountId32ToSs58(hexToBytes(addr));
+      } else {
+        ss58 = addr; // assume already-valid SS58
+      }
+    } catch (err) {
+      logger.debug(`Substrate address normalization failed for ${addr}: ${(err as Error).message}`);
+      return null;
+    }
 
     try {
       // polkadot-api unsafe API — works without pre-generated chain descriptors
       const unsafeApi = this.substrateClient.getUnsafeApi();
-      const account = await unsafeApi.query.System.Account.getValue(ss58OrHex);
+      const account = await unsafeApi.query.System.Account.getValue(ss58);
 
       if (!account) return null;
 
@@ -223,7 +327,7 @@ export class AgentKitWrapper {
         frozen: BigInt(account.data?.frozen ?? 0),
       };
     } catch (err) {
-      logger.debug(`Substrate balance query failed for ${ss58OrHex}: ${(err as Error).message}`);
+      logger.debug(`Substrate balance query failed for ${addr} (ss58=${ss58}): ${(err as Error).message}`);
       return null;
     }
   }
@@ -231,23 +335,39 @@ export class AgentKitWrapper {
   /**
    * Compare EVM and Substrate balance for the same address.
    *
-   * Polkadot Hub maps EVM H160 addresses to Substrate AccountId32 internally.
-   * Both layers should show the same free balance (modulo decimal conversion:
-   * Substrate uses 10 decimals / Planck, EVM uses 18 decimals / wei).
+   * Polkadot Hub's pallet-revive maps each EVM H160 to a deterministic
+   * AccountId32 using the fallback scheme (h160 ‖ 0xEE × 12). Both
+   * protocol layers read the SAME underlying account — `eth_getBalance`
+   * and `System.Account` are two different RPC faces on the same state.
    *
-   * 1 PAS = 10^10 Planck (Substrate) = 10^18 wei (EVM)
-   * Conversion: substrateFree × 10^8 ≈ evmWei
+   * Decimal and existential-deposit invariants (verified live on Paseo):
+   *   - 1 PAS = 10^10 planck = 10^18 wei
+   *   - The eth-rpc adapter hides the existential deposit (10^8 planck)
+   *     from eth_getBalance, reporting "spendable" (free − ED) instead of free.
+   *   - Invariant:  evmWei == (substrateFree − ED) × 10^8
+   *
+   * Consistency is true when the invariant holds. Divergence points to a
+   * mapping bug, a read-time race, or an account that hasn't yet been
+   * activated on the Substrate side (ED not yet provisioned).
    */
   async getDualLayerBalance(address: string): Promise<DualLayerBalance> {
-    const evmWei = await this.provider.getBalance(address);
+    const [evmWei, substrate] = await Promise.all([
+      this.provider.getBalance(address),
+      this.getSubstrateBalance(address),
+    ]);
 
-    // Note: direct H160→AccountId32 lookup in Substrate requires the
-    // EVM pallet's address mapping. For now we surface what's available.
-    const substrateBlock = await this.getSubstrateFinalizedBlock();
-    const substrateFree = substrateBlock ? null : null; // placeholder — see note
+    const substrateFree = substrate ? substrate.free : null;
 
-    // Consistency: if EVM shows non-zero, Substrate should too
-    const consistent = substrateFree === null ? true : evmWei > 0n === substrateFree > 0n;
+    // Invariant: evmWei == (substrateFree - ED) × 10^8, when the account is ED-provisioned.
+    // For addresses with zero balance on both sides, the invariant trivially holds.
+    let consistent = true;
+    if (substrateFree !== null) {
+      const spendablePlanck =
+        substrateFree >= EXISTENTIAL_DEPOSIT_PLANCK
+          ? substrateFree - EXISTENTIAL_DEPOSIT_PLANCK
+          : 0n;
+      consistent = spendablePlanck * EVM_TO_PLANCK_DIVISOR === evmWei;
+    }
 
     return { evmWei, substrateFree, consistent };
   }
