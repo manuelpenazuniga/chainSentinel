@@ -15,6 +15,7 @@ const VAULT_ABI = [
 
 const REGISTRY_ABI = [
   "function reportThreat(address targetContract, uint256 threatScore, string attackType, string evidence) external",
+  "function reportThreatWithPlaybook(address targetContract, uint256 threatScore, string attackType, string evidence, tuple(string triggeredRules, bytes4 functionSelector, bytes32 calldataHash, string escalationLevel, bool llmUsed, uint256 llmConfidence) playbook) external",
 ];
 
 // ─── Escalation Thresholds ─────────────────────────────────────────────────
@@ -380,13 +381,29 @@ export class Executor {
   ): Promise<ExecutorResult> {
     const evidence = `tx:${assessment.transaction.hash}|score:${assessment.score}|rules:${assessment.triggeredRules.join(",")}`;
 
-    // ── Simulate first ────────────────────────────────────────────────────
-    const revertReason = await this.simulate(
+    // Build structured playbook from the assessment
+    const playbook = this.buildPlaybook(assessment);
+
+    // ── Simulate with playbook first, fall back to legacy reportThreat ───
+    let usePlaybook = true;
+    let revertReason = await this.simulate(
       target.registry,
-      "reportThreat",
-      [assessment.transaction.to, assessment.score, assessment.attackType, evidence],
+      "reportThreatWithPlaybook",
+      [assessment.transaction.to, assessment.score, assessment.attackType, evidence, playbook],
       target.label
     );
+
+    if (revertReason) {
+      // Registry may not support playbooks yet — fall back to legacy
+      logger.info(`[${target.label}] Playbook report unavailable, falling back to legacy reportThreat`);
+      usePlaybook = false;
+      revertReason = await this.simulate(
+        target.registry,
+        "reportThreat",
+        [assessment.transaction.to, assessment.score, assessment.attackType, evidence],
+        target.label
+      );
+    }
 
     if (revertReason) {
       logger.warn(`[${target.label}] Report simulation reverted: ${revertReason}`);
@@ -401,18 +418,29 @@ export class Executor {
 
     // ── Execute for real ──────────────────────────────────────────────────
     try {
-      const tx = await target.registry.reportThreat(
-        assessment.transaction.to,
-        assessment.score,
-        assessment.attackType,
-        evidence
-      );
+      let tx;
+      if (usePlaybook) {
+        tx = await target.registry.reportThreatWithPlaybook(
+          assessment.transaction.to,
+          assessment.score,
+          assessment.attackType,
+          evidence,
+          playbook
+        );
+      } else {
+        tx = await target.registry.reportThreat(
+          assessment.transaction.to,
+          assessment.score,
+          assessment.attackType,
+          evidence
+        );
+      }
 
       const receipt = await tx.wait();
 
       logger.info(
-        `[${target.label}] Threat reported to registry. Target: ${assessment.transaction.to}, ` +
-        `Score: ${assessment.score}, Tx: ${receipt.hash}`
+        `[${target.label}] Threat reported to registry${usePlaybook ? " (with playbook)" : ""}. ` +
+        `Target: ${assessment.transaction.to}, Score: ${assessment.score}, Tx: ${receipt.hash}`
       );
 
       return {
@@ -434,6 +462,41 @@ export class Executor {
         simulated: true,
       };
     }
+  }
+
+  /**
+   * Build a structured AttackPlaybook from a ThreatAssessment.
+   *
+   * Maps agent-internal assessment fields to the on-chain playbook struct:
+   *   triggeredRules  → comma-separated rule names
+   *   functionSelector→ 4-byte selector from the suspicious transaction
+   *   calldataHash    → keccak256 of the full transaction input data
+   *   escalationLevel → graduated escalation level for this assessment
+   *   llmUsed         → whether the LLM was consulted
+   *   llmConfidence   → LLM confidence 0-100, or 0 if not used
+   */
+  private buildPlaybook(assessment: ThreatAssessment) {
+    const escalation = determineEscalation(assessment.score, assessment.llmUsed);
+
+    // Pad the function selector to exactly 4 bytes (0x + 8 hex chars)
+    const rawSelector = assessment.transaction.functionSelector;
+    const selectorHex = rawSelector.length >= 10
+      ? rawSelector.slice(0, 10)
+      : "0x00000000";
+
+    // keccak256 of the full calldata for correlation across attacks
+    const calldataHash = assessment.transaction.input.length > 2
+      ? ethers.keccak256(assessment.transaction.input)
+      : ethers.ZeroHash;
+
+    return {
+      triggeredRules: assessment.triggeredRules.join(","),
+      functionSelector: selectorHex,
+      calldataHash: calldataHash,
+      escalationLevel: escalation,
+      llmUsed: assessment.llmUsed,
+      llmConfidence: assessment.llmConfidence ?? 0,
+    };
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────

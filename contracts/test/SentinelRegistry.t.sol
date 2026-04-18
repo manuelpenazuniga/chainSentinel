@@ -222,4 +222,264 @@ contract SentinelRegistryTest is Test {
     function test_isBlacklisted_falseByDefault() public view {
         assertFalse(registry.isBlacklisted(maliciousContract));
     }
+
+    // ─── Playbook Tests ───
+
+    // Re-declare event for expectEmit
+    event PlaybookSubmitted(
+        address indexed reporter,
+        address indexed targetContract,
+        uint256 reportIndex,
+        bytes4 functionSelector,
+        string escalationLevel
+    );
+
+    function _samplePlaybook() internal pure returns (SentinelRegistry.AttackPlaybook memory) {
+        return SentinelRegistry.AttackPlaybook({
+            triggeredRules: "FLASH_LOAN_PATTERN,DRASTIC_BALANCE_CHANGE",
+            functionSelector: bytes4(0xab9c4b5d),
+            calldataHash: keccak256("sample-calldata"),
+            escalationLevel: "EMERGENCY_WITHDRAW_ALL",
+            llmUsed: true,
+            llmConfidence: 85
+        });
+    }
+
+    function test_reportThreatWithPlaybook() public {
+        SentinelRegistry.AttackPlaybook memory playbook = _samplePlaybook();
+
+        vm.prank(reporter1);
+        registry.reportThreatWithPlaybook(maliciousContract, 90, "FLASH_LOAN", "0xabc123", playbook);
+
+        // Report should be stored
+        assertEq(registry.reportCount(maliciousContract), 1);
+        assertEq(registry.aggregateScore(maliciousContract), 90);
+        assertEq(registry.totalReports(), 1);
+
+        // Playbook should be stored
+        assertTrue(registry.hasPlaybook(maliciousContract, 0));
+        assertEq(registry.getPlaybookCount(maliciousContract), 1);
+        assertEq(registry.totalPlaybooks(), 1);
+    }
+
+    function test_reportThreatWithPlaybook_playbookData() public {
+        SentinelRegistry.AttackPlaybook memory playbook = _samplePlaybook();
+
+        vm.prank(reporter1);
+        registry.reportThreatWithPlaybook(maliciousContract, 80, "FLASH_LOAN", "0xabc", playbook);
+
+        SentinelRegistry.AttackPlaybook memory stored = registry.getPlaybook(maliciousContract, 0);
+
+        assertEq(stored.triggeredRules, "FLASH_LOAN_PATTERN,DRASTIC_BALANCE_CHANGE");
+        assertEq(stored.functionSelector, bytes4(0xab9c4b5d));
+        assertEq(stored.calldataHash, keccak256("sample-calldata"));
+        assertEq(stored.escalationLevel, "EMERGENCY_WITHDRAW_ALL");
+        assertTrue(stored.llmUsed);
+        assertEq(stored.llmConfidence, 85);
+    }
+
+    function test_reportThreatWithPlaybook_emitsBothEvents() public {
+        SentinelRegistry.AttackPlaybook memory playbook = _samplePlaybook();
+
+        vm.prank(reporter1);
+
+        // Expect ThreatReported
+        vm.expectEmit(true, true, false, true);
+        emit ThreatReported(reporter1, maliciousContract, 80, "FLASH_LOAN", block.number);
+
+        // Expect PlaybookSubmitted
+        vm.expectEmit(true, true, false, true);
+        emit PlaybookSubmitted(reporter1, maliciousContract, 0, bytes4(0xab9c4b5d), "EMERGENCY_WITHDRAW_ALL");
+
+        registry.reportThreatWithPlaybook(maliciousContract, 80, "FLASH_LOAN", "0xabc", playbook);
+    }
+
+    function test_reportThreatWithPlaybook_blacklists() public {
+        SentinelRegistry.AttackPlaybook memory playbook = _samplePlaybook();
+
+        vm.prank(reporter1);
+        registry.reportThreatWithPlaybook(maliciousContract, 95, "DRAIN", "0xabc", playbook);
+
+        assertTrue(registry.isBlacklisted(maliciousContract));
+    }
+
+    function test_reportThreatWithPlaybook_revertsIfNotAuthorized() public {
+        SentinelRegistry.AttackPlaybook memory playbook = _samplePlaybook();
+
+        vm.prank(unauthorized);
+        vm.expectRevert(SentinelRegistry.NotAuthorizedReporter.selector);
+        registry.reportThreatWithPlaybook(maliciousContract, 80, "FLASH_LOAN", "0xabc", playbook);
+    }
+
+    function test_reportThreatWithPlaybook_revertsIfInvalidScore() public {
+        SentinelRegistry.AttackPlaybook memory playbook = _samplePlaybook();
+
+        vm.prank(reporter1);
+        vm.expectRevert(SentinelRegistry.InvalidScore.selector);
+        registry.reportThreatWithPlaybook(maliciousContract, 0, "FLASH_LOAN", "0xabc", playbook);
+
+        vm.prank(reporter1);
+        vm.expectRevert(SentinelRegistry.InvalidScore.selector);
+        registry.reportThreatWithPlaybook(maliciousContract, 101, "FLASH_LOAN", "0xabc", playbook);
+    }
+
+    function test_reportThreatWithPlaybook_revertsIfZeroAddress() public {
+        SentinelRegistry.AttackPlaybook memory playbook = _samplePlaybook();
+
+        vm.prank(reporter1);
+        vm.expectRevert(SentinelRegistry.ZeroAddress.selector);
+        registry.reportThreatWithPlaybook(address(0), 80, "FLASH_LOAN", "0xabc", playbook);
+    }
+
+    function test_reportThreatWithPlaybook_revertsIfEmptyAttackType() public {
+        SentinelRegistry.AttackPlaybook memory playbook = _samplePlaybook();
+
+        vm.prank(reporter1);
+        vm.expectRevert(SentinelRegistry.EmptyAttackType.selector);
+        registry.reportThreatWithPlaybook(maliciousContract, 80, "", "0xabc", playbook);
+    }
+
+    function test_reportThreatWithPlaybook_revertsIfEmptyEvidence() public {
+        SentinelRegistry.AttackPlaybook memory playbook = _samplePlaybook();
+
+        vm.prank(reporter1);
+        vm.expectRevert(SentinelRegistry.EmptyEvidence.selector);
+        registry.reportThreatWithPlaybook(maliciousContract, 80, "FLASH_LOAN", "", playbook);
+    }
+
+    function test_hasPlaybook_falseForNormalReport() public {
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 75, "FLASH_LOAN", "0xabc");
+
+        assertFalse(registry.hasPlaybook(maliciousContract, 0));
+    }
+
+    function test_getPlaybook_emptyForNormalReport() public {
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 75, "FLASH_LOAN", "0xabc");
+
+        SentinelRegistry.AttackPlaybook memory pb = registry.getPlaybook(maliciousContract, 0);
+        assertEq(pb.triggeredRules, "");
+        assertEq(pb.functionSelector, bytes4(0));
+        assertEq(pb.calldataHash, bytes32(0));
+        assertEq(pb.escalationLevel, "");
+        assertFalse(pb.llmUsed);
+        assertEq(pb.llmConfidence, 0);
+    }
+
+    function test_mixedReportsAndPlaybooks() public {
+        // Report 0: normal (no playbook)
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 50, "DRAIN", "evidence0");
+
+        // Report 1: with playbook
+        SentinelRegistry.AttackPlaybook memory pb1 = SentinelRegistry.AttackPlaybook({
+            triggeredRules: "TX_BURST",
+            functionSelector: bytes4(0x12345678),
+            calldataHash: keccak256("calldata1"),
+            escalationLevel: "REPORT",
+            llmUsed: false,
+            llmConfidence: 0
+        });
+        vm.prank(reporter2);
+        registry.reportThreatWithPlaybook(maliciousContract, 60, "REENTRANCY", "evidence1", pb1);
+
+        // Report 2: normal (no playbook)
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 70, "DRAIN", "evidence2");
+
+        // Report 3: with playbook
+        SentinelRegistry.AttackPlaybook memory pb2 = _samplePlaybook();
+        vm.prank(reporter2);
+        registry.reportThreatWithPlaybook(maliciousContract, 80, "FLASH_LOAN", "evidence3", pb2);
+
+        // Verify report count and playbook count
+        assertEq(registry.reportCount(maliciousContract), 4);
+        assertEq(registry.totalReports(), 4);
+        assertEq(registry.getPlaybookCount(maliciousContract), 2);
+        assertEq(registry.totalPlaybooks(), 2);
+
+        // Verify hasPlaybook flags
+        assertFalse(registry.hasPlaybook(maliciousContract, 0));
+        assertTrue(registry.hasPlaybook(maliciousContract, 1));
+        assertFalse(registry.hasPlaybook(maliciousContract, 2));
+        assertTrue(registry.hasPlaybook(maliciousContract, 3));
+
+        // Verify playbook data for report 1
+        SentinelRegistry.AttackPlaybook memory stored1 = registry.getPlaybook(maliciousContract, 1);
+        assertEq(stored1.triggeredRules, "TX_BURST");
+        assertEq(stored1.functionSelector, bytes4(0x12345678));
+        assertEq(stored1.escalationLevel, "REPORT");
+        assertFalse(stored1.llmUsed);
+
+        // Verify playbook data for report 3
+        SentinelRegistry.AttackPlaybook memory stored3 = registry.getPlaybook(maliciousContract, 3);
+        assertEq(stored3.triggeredRules, "FLASH_LOAN_PATTERN,DRASTIC_BALANCE_CHANGE");
+        assertEq(stored3.functionSelector, bytes4(0xab9c4b5d));
+        assertEq(stored3.escalationLevel, "EMERGENCY_WITHDRAW_ALL");
+        assertTrue(stored3.llmUsed);
+        assertEq(stored3.llmConfidence, 85);
+    }
+
+    function test_getPlaybooks_pagination() public {
+        SentinelRegistry.AttackPlaybook memory pb = _samplePlaybook();
+
+        // Submit 5 reports with playbooks
+        for (uint256 i = 0; i < 5; i++) {
+            vm.prank(reporter1);
+            registry.reportThreatWithPlaybook(
+                maliciousContract, 50 + uint256(i), "DRAIN", "evidence", pb
+            );
+        }
+
+        // Get first 3
+        SentinelRegistry.AttackPlaybook[] memory page1 = registry.getPlaybooks(maliciousContract, 0, 3);
+        assertEq(page1.length, 3);
+
+        // Get remaining 2
+        SentinelRegistry.AttackPlaybook[] memory page2 = registry.getPlaybooks(maliciousContract, 3, 10);
+        assertEq(page2.length, 2);
+
+        // Out of bounds offset
+        SentinelRegistry.AttackPlaybook[] memory page3 = registry.getPlaybooks(maliciousContract, 10, 5);
+        assertEq(page3.length, 0);
+    }
+
+    function test_getPlaybookCount_zeroByDefault() public view {
+        assertEq(registry.getPlaybookCount(maliciousContract), 0);
+    }
+
+    function test_reportThreatWithPlaybook_llmNotUsed() public {
+        SentinelRegistry.AttackPlaybook memory playbook = SentinelRegistry.AttackPlaybook({
+            triggeredRules: "ANOMALOUS_VALUE,FRESH_CONTRACT",
+            functionSelector: bytes4(0xa9059cbb),
+            calldataHash: keccak256("some-calldata"),
+            escalationLevel: "DEFENSIVE_WITHDRAW",
+            llmUsed: false,
+            llmConfidence: 0
+        });
+
+        vm.prank(reporter1);
+        registry.reportThreatWithPlaybook(maliciousContract, 75, "DRAIN", "0xabc", playbook);
+
+        SentinelRegistry.AttackPlaybook memory stored = registry.getPlaybook(maliciousContract, 0);
+        assertFalse(stored.llmUsed);
+        assertEq(stored.llmConfidence, 0);
+    }
+
+    function test_reportThreatWithPlaybook_aggregateScoreAverage() public {
+        SentinelRegistry.AttackPlaybook memory playbook = _samplePlaybook();
+
+        // Report via reportThreat: score 80
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 80, "DRAIN", "0xabc");
+
+        // Report via reportThreatWithPlaybook: score 60
+        vm.prank(reporter2);
+        registry.reportThreatWithPlaybook(maliciousContract, 60, "FLASH_LOAN", "0xdef", playbook);
+
+        // Average: (80 + 60) / 2 = 70
+        assertEq(registry.aggregateScore(maliciousContract), 70);
+        assertEq(registry.reportCount(maliciousContract), 2);
+    }
 }

@@ -140,4 +140,25 @@ contract SentinelRegistryInvariantTest is Test {
     function invariant_ownerNeverChanges() public view {
         assertEq(registry.owner(), address(this), "Owner changed - should be immutable");
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // INVARIANT 7 — PLAYBOOK COUNT CONSISTENCY
+    // totalPlaybooks must equal the sum of per-contract playbook counts.
+    // Playbook count for a contract must never exceed its report count.
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function invariant_playbookCountConsistency() public view {
+        uint256 sum = 0;
+        uint256 count = handler.getTargetCount();
+        for (uint256 i = 0; i < count; i++) {
+            address target = handler.ghost_targets(i);
+            uint256 pbCount = registry.getPlaybookCount(target);
+            sum += pbCount;
+            assertTrue(
+                pbCount <= registry.reportCount(target),
+                "Playbook count exceeds report count"
+            );
+        }
+        assertEq(registry.totalPlaybooks(), sum, "totalPlaybooks != sum of per-contract counts");
+    }
 }

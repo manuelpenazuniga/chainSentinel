@@ -23,6 +23,7 @@ contract RegistryHandler is Test {
     mapping(address => uint256) public ghost_reportCount;
 
     uint256 public ghost_totalReports;
+    uint256 public ghost_totalPlaybooks;
 
     constructor(SentinelRegistry _registry, address _owner, address[] memory _reporters) {
         registry = _registry;
@@ -47,6 +48,38 @@ contract RegistryHandler is Test {
         ghost_scoreSum[target] += score;
         ghost_reportCount[target]++;
         ghost_totalReports++;
+
+        if (!ghost_targetSeen[target]) {
+            ghost_targetSeen[target] = true;
+            ghost_targets.push(target);
+        }
+    }
+
+    function reportThreatWithPlaybook(uint256 reporterIdx, uint256 targetSeed, uint256 score) external {
+        reporterIdx = bound(reporterIdx, 0, reporters.length - 1);
+        address reporter = reporters[reporterIdx];
+
+        address target = address(uint160(uint256(keccak256(abi.encode(targetSeed)))));
+        if (target == address(0)) target = address(1);
+
+        score = bound(score, 1, 100);
+
+        SentinelRegistry.AttackPlaybook memory playbook = SentinelRegistry.AttackPlaybook({
+            triggeredRules: "FUZZ_RULE",
+            functionSelector: bytes4(0xdeadbeef),
+            calldataHash: keccak256(abi.encode(targetSeed, score)),
+            escalationLevel: "REPORT",
+            llmUsed: score > 50,
+            llmConfidence: score > 50 ? score : 0
+        });
+
+        vm.prank(reporter);
+        registry.reportThreatWithPlaybook(target, score, "FUZZ", "fuzz-evidence", playbook);
+
+        ghost_scoreSum[target] += score;
+        ghost_reportCount[target]++;
+        ghost_totalReports++;
+        ghost_totalPlaybooks++;
 
         if (!ghost_targetSeen[target]) {
             ghost_targetSeen[target] = true;
