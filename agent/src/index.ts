@@ -3,7 +3,7 @@ import { AgentConfig } from "./types.js";
 import { MonitorContext } from "./context.js";
 import { Monitor } from "./monitor.js";
 import { analyzeTransaction } from "./analyzer.js";
-import { Executor } from "./executor.js";
+import { Executor, determineEscalation } from "./executor.js";
 import { Alerter } from "./alerter.js";
 import { XcmMonitor } from "./xcm-monitor.js";
 import { AgentKitWrapper } from "./agentkit.js";
@@ -120,9 +120,11 @@ async function main(): Promise<void> {
 
       if (assessment.score === 0) continue;
 
+      const escalation = determineEscalation(assessment.score, assessment.llmUsed);
+
       logger.info(
         `Assessment for tx ${tx.hash}: score=${assessment.score}, ` +
-        `classification=${assessment.classification}, action=${assessment.recommendedAction}`
+        `classification=${assessment.classification}, escalation=${escalation}`
       );
 
       // Cross-layer correlation: register high-score senders with XCM monitor
@@ -135,27 +137,29 @@ async function main(): Promise<void> {
         await alerter.sendAlert({
           type: "THREAT_DETECTED",
           assessment,
-          message: `Threat detected! Score: ${assessment.score}/100`,
+          message: `[${escalation}] Threat detected! Score: ${assessment.score}/100`,
           timestamp: Date.now(),
         });
       }
 
-      if (assessment.recommendedAction === "EMERGENCY_WITHDRAW" ||
-          assessment.score >= config.emergencyThreshold) {
-        const results = await executor.execute(assessment);
+      // Executor handles graduated response internally:
+      //   MONITOR → no-op (returns [])
+      //   REPORT  → reportThreat() only
+      //   DEFENSIVE_WITHDRAW → emergencyWithdraw(native) + reportThreat()
+      //   EMERGENCY_WITHDRAW_ALL → emergencyWithdrawAll() + reportThreat()
+      //
+      // Every on-chain write is preceded by a simulation (eth_call dry-run).
+      const results = await executor.execute(assessment);
 
-        for (const result of results) {
-          if (result.success && result.action === "EMERGENCY_WITHDRAW_ALL") {
-            await alerter.sendAlert({
-              type: "EMERGENCY_EXECUTED",
-              assessment,
-              message: `[${result.vmLabel ?? "REVM"}] Emergency withdrawal executed! Tx: ${result.txHash}`,
-              timestamp: Date.now(),
-            });
-          }
+      for (const result of results) {
+        if (result.success && (result.action === "EMERGENCY_WITHDRAW_ALL" || result.action === "EMERGENCY_WITHDRAW")) {
+          await alerter.sendAlert({
+            type: "EMERGENCY_EXECUTED",
+            assessment,
+            message: `[${result.vmLabel ?? "REVM"}] ${escalation} executed! Tx: ${result.txHash}`,
+            timestamp: Date.now(),
+          });
         }
-      } else if (assessment.score > 50) {
-        await executor.execute(assessment);
       }
     }
   });

@@ -134,6 +134,22 @@ export interface AlertData {
   timestamp: number;
 }
 
+// ─── Escalation Level ───
+
+/**
+ * Graduated response levels, from least to most disruptive.
+ *
+ *   MONITOR               → Log + alert only (no on-chain action)
+ *   REPORT                → reportThreat() to registry
+ *   DEFENSIVE_WITHDRAW    → emergencyWithdraw(native token) + reportThreat()
+ *   EMERGENCY_WITHDRAW_ALL→ emergencyWithdrawAll() + reportThreat()
+ */
+export type EscalationLevel =
+  | "MONITOR"
+  | "REPORT"
+  | "DEFENSIVE_WITHDRAW"
+  | "EMERGENCY_WITHDRAW_ALL";
+
 // ─── Executor Result ───
 
 export interface ExecutorResult {
@@ -144,4 +160,6 @@ export interface ExecutorResult {
   blockNumber?: number;
   /** Which vault/registry was targeted (e.g. "REVM", "PVM"). */
   vmLabel?: string;
+  /** Whether this action was preceded by a successful simulation (eth_call dry-run). */
+  simulated?: boolean;
 }
