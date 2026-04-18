@@ -28,6 +28,8 @@ function loadConfig(): AgentConfig {
     agentPrivateKey: process.env.AGENT_PRIVATE_KEY!,
     vaultAddress: process.env.VAULT_ADDRESS!,
     registryAddress: process.env.REGISTRY_ADDRESS!,
+    vaultAddressPvm: process.env.VAULT_ADDRESS_PVM,
+    registryAddressPvm: process.env.REGISTRY_ADDRESS_PVM,
     geminiApiKey: process.env.GEMINI_API_KEY!,
     heuristicThreshold: parseInt(process.env.HEURISTIC_THRESHOLD || "30"),
     emergencyThreshold: parseInt(process.env.DEFAULT_EMERGENCY_THRESHOLD || "80"),
@@ -44,8 +46,13 @@ async function main(): Promise<void> {
   const config = loadConfig();
   logger.info(`RPC: ${config.rpcUrl}`);
   logger.info(`Chain ID: ${config.chainId}`);
-  logger.info(`Vault: ${config.vaultAddress}`);
-  logger.info(`Registry: ${config.registryAddress}`);
+  logger.info(`Vault (REVM): ${config.vaultAddress}`);
+  logger.info(`Registry (REVM): ${config.registryAddress}`);
+  if (config.vaultAddressPvm) {
+    logger.info(`Vault (PVM): ${config.vaultAddressPvm}`);
+    logger.info(`Registry (PVM): ${config.registryAddressPvm}`);
+    logger.info("Dual-VM mode: monitoring REVM + PVM simultaneously");
+  }
   logger.info(`Heuristic threshold: ${config.heuristicThreshold}`);
   logger.info(`Emergency threshold: ${config.emergencyThreshold}`);
 
@@ -99,9 +106,11 @@ async function main(): Promise<void> {
     logger.info("WS_URL not set — XCM monitoring disabled (EVM-only mode)");
   }
 
+  const vmMode = executor.getActiveVMs().join("+");
   await alerter.sendAlert({
     type: "AGENT_STARTED",
-    message: `ChainSentinel agent started. Monitoring vault ${config.vaultAddress}`,
+    message: `ChainSentinel agent started. Mode: ${vmMode}. Monitoring vault(s): ${config.vaultAddress.slice(0, 10)}...` +
+      (config.vaultAddressPvm ? ` + ${config.vaultAddressPvm.slice(0, 10)}...` : ""),
     timestamp: Date.now(),
   });
 
@@ -140,7 +149,7 @@ async function main(): Promise<void> {
             await alerter.sendAlert({
               type: "EMERGENCY_EXECUTED",
               assessment,
-              message: `Emergency withdrawal executed! Tx: ${result.txHash}`,
+              message: `[${result.vmLabel ?? "REVM"}] Emergency withdrawal executed! Tx: ${result.txHash}`,
               timestamp: Date.now(),
             });
           }

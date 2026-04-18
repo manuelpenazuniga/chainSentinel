@@ -112,6 +112,10 @@ export interface AgentConfig {
   agentPrivateKey: string;
   vaultAddress: string;
   registryAddress: string;
+  /** PVM vault address — when set, the agent monitors both REVM and PVM vaults simultaneously. */
+  vaultAddressPvm?: string;
+  /** PVM registry address — when set, threats are reported to both registries. */
+  registryAddressPvm?: string;
   geminiApiKey: string;
   heuristicThreshold: number;
   emergencyThreshold: number;
@@ -138,4 +142,6 @@ export interface ExecutorResult {
   error?: string;
   action: "EMERGENCY_WITHDRAW" | "EMERGENCY_WITHDRAW_ALL" | "REPORT_THREAT";
   blockNumber?: number;
+  /** Which vault/registry was targeted (e.g. "REVM", "PVM"). */
+  vmLabel?: string;
 }
