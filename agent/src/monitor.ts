@@ -1,6 +1,7 @@
 import { ethers } from "ethers";
 import { TransactionData, AgentConfig } from "./types.js";
 import { MonitorContext } from "./context.js";
+import { GasPriorityEstimator, FeeSnapshot } from "./gas-priority.js";
 import { createLogger } from "./logger.js";
 
 const logger = createLogger("monitor");
@@ -22,6 +23,7 @@ export class Monitor {
   private onBlockCallback:
     | ((txs: TransactionData[], blockNumber: number) => Promise<void>)
     | null = null;
+  private gasEstimator: GasPriorityEstimator | null = null;
 
   constructor(config: AgentConfig, context: MonitorContext) {
     this.context = context;
@@ -30,6 +32,11 @@ export class Monitor {
       chainId: config.chainId,
       name: "polkadot-hub-testnet",
     });
+  }
+
+  /** Connect the gas estimator so each block's fee data is recorded. */
+  setGasEstimator(estimator: GasPriorityEstimator): void {
+    this.gasEstimator = estimator;
   }
 
   async start(
@@ -94,6 +101,17 @@ export class Monitor {
     if (!block || !block.prefetchedTransactions) {
       logger.debug(`Block ${blockNumber}: no transactions`);
       return;
+    }
+
+    // Feed block fee data to the gas estimator for MEV-aware priority fees
+    if (this.gasEstimator && block.baseFeePerGas != null) {
+      const snapshot: FeeSnapshot = {
+        blockNumber,
+        baseFeePerGas: block.baseFeePerGas,
+        gasUsed: block.gasUsed,
+        gasLimit: block.gasLimit,
+      };
+      this.gasEstimator.recordBlock(snapshot);
     }
 
     const txs: TransactionData[] = [];

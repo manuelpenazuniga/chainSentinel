@@ -65,6 +65,9 @@ async function main(): Promise<void> {
   const executor = new Executor(config);
   const alerter = new Alerter(config);
 
+  // Connect the gas estimator so the monitor feeds block fee data to the executor
+  monitor.setGasEstimator(executor.getGasEstimator());
+
   // ─── XCM Monitor (Substrate layer) ──────────────────────────────────────
   let xcmMonitor: XcmMonitor | null = null;
 

@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { ThreatAssessment, ExecutorResult, AgentConfig } from "./types.js";
+import { GasPriorityEstimator } from "./gas-priority.js";
 import { createLogger } from "./logger.js";
 
 const logger = createLogger("executor");
@@ -21,6 +22,7 @@ export class Executor {
   private vault: ethers.Contract;
   private registry: ethers.Contract;
   private config: AgentConfig;
+  private gasEstimator: GasPriorityEstimator;
 
   constructor(config: AgentConfig) {
     this.config = config;
@@ -33,8 +35,14 @@ export class Executor {
     this.wallet = new ethers.Wallet(config.agentPrivateKey, provider);
     this.vault = new ethers.Contract(config.vaultAddress, VAULT_ABI, this.wallet);
     this.registry = new ethers.Contract(config.registryAddress, REGISTRY_ABI, this.wallet);
+    this.gasEstimator = new GasPriorityEstimator(provider);
 
     logger.info(`Executor initialized. Agent address: ${this.wallet.address}`);
+  }
+
+  /** Expose the gas estimator so the monitor can feed it block data. */
+  getGasEstimator(): GasPriorityEstimator {
+    return this.gasEstimator;
   }
 
   async execute(assessment: ThreatAssessment): Promise<ExecutorResult[]> {
@@ -88,9 +96,13 @@ export class Executor {
         `Tx: ${assessment.transaction.hash}`
       );
 
+      // MEV-aware gas: higher threat score → higher priority fee
+      const gasOverrides = await this.gasEstimator.estimateGasOverrides(assessment.score);
+
       const tx = await this.vault.emergencyWithdrawAll(
         assessment.score,
-        reason
+        reason,
+        gasOverrides
       );
 
       const receipt = await tx.wait();
