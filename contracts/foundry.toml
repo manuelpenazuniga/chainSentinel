@@ -16,5 +16,10 @@ line_length = 120
 tab_width = 4
 bracket_spacing = true
 
+[invariant]
+runs = 256
+depth = 64
+fail_on_revert = false
+
 [rpc_endpoints]
 paseo = "https://services.polkadothub-rpc.com/testnet"
