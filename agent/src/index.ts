@@ -5,6 +5,7 @@ import { Monitor } from "./monitor.js";
 import { analyzeTransaction } from "./analyzer.js";
 import { Executor, determineEscalation } from "./executor.js";
 import { Alerter } from "./alerter.js";
+import { HeartbeatClient } from "./heartbeat.js";
 import { XcmMonitor } from "./xcm-monitor.js";
 import { AgentKitWrapper } from "./agentkit.js";
 import { createLogger } from "./logger.js";
@@ -37,6 +38,8 @@ function loadConfig(): AgentConfig {
     llmTimeoutMs: parseInt(process.env.LLM_TIMEOUT_MS || "10000"),
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
     telegramChatId: process.env.TELEGRAM_CHAT_ID,
+    heartbeatAddress: process.env.HEARTBEAT_ADDRESS,
+    heartbeatIntervalBlocks: parseInt(process.env.HEARTBEAT_INTERVAL_BLOCKS || "50"),
   };
 }
 
@@ -75,6 +78,34 @@ async function main(): Promise<void> {
   // Connect the gas estimator so the monitor feeds block fee data to the executor
   monitor.setGasEstimator(executor.getGasEstimator());
 
+  // ─── Heartbeat (on-chain liveness proof) ────────────────────────────────
+  let heartbeat: HeartbeatClient | null = null;
+
+  if (config.heartbeatAddress) {
+    const wallet = new ethers.Wallet(config.agentPrivateKey, provider);
+    heartbeat = new HeartbeatClient(
+      config.heartbeatAddress,
+      wallet,
+      config.heartbeatIntervalBlocks
+    );
+
+    // Check initial status
+    try {
+      const status = await heartbeat.checkStatus();
+      logger.info(
+        `Heartbeat status: alive=${status.alive}, pings=${status.pingCount}, ` +
+        `blocksSinceLastPing=${status.blocksSinceLastPing}`
+      );
+    } catch (err) {
+      logger.warn(`Heartbeat status check failed (non-fatal): ${(err as Error).message}`);
+    }
+  } else {
+    logger.info("HEARTBEAT_ADDRESS not set - on-chain liveness proof disabled");
+  }
+
+  // Connect heartbeat to monitor so it pings on each new block
+  monitor.setHeartbeat(heartbeat);
+
   // ─── XCM Monitor (Substrate layer) ──────────────────────────────────────
   let xcmMonitor: XcmMonitor | null = null;
 
@@ -110,7 +141,8 @@ async function main(): Promise<void> {
   await alerter.sendAlert({
     type: "AGENT_STARTED",
     message: `ChainSentinel agent started. Mode: ${vmMode}. Monitoring vault(s): ${config.vaultAddress.slice(0, 10)}...` +
-      (config.vaultAddressPvm ? ` + ${config.vaultAddressPvm.slice(0, 10)}...` : ""),
+      (config.vaultAddressPvm ? ` + ${config.vaultAddressPvm.slice(0, 10)}...` : "") +
+      (heartbeat ? ` | Heartbeat: every ${config.heartbeatIntervalBlocks} blocks` : ""),
     timestamp: Date.now(),
   });
 

@@ -2,6 +2,7 @@ import { ethers } from "ethers";
 import { TransactionData, AgentConfig } from "./types.js";
 import { MonitorContext } from "./context.js";
 import { GasPriorityEstimator, FeeSnapshot } from "./gas-priority.js";
+import { HeartbeatClient } from "./heartbeat.js";
 import { createLogger } from "./logger.js";
 
 const logger = createLogger("monitor");
@@ -24,6 +25,7 @@ export class Monitor {
     | ((txs: TransactionData[], blockNumber: number) => Promise<void>)
     | null = null;
   private gasEstimator: GasPriorityEstimator | null = null;
+  private heartbeat: HeartbeatClient | null = null;
 
   constructor(config: AgentConfig, context: MonitorContext) {
     this.context = context;
@@ -37,6 +39,11 @@ export class Monitor {
   /** Connect the gas estimator so each block's fee data is recorded. */
   setGasEstimator(estimator: GasPriorityEstimator): void {
     this.gasEstimator = estimator;
+  }
+
+  /** Connect the heartbeat client so it pings on each new block. */
+  setHeartbeat(client: HeartbeatClient | null): void {
+    this.heartbeat = client;
   }
 
   async start(
@@ -199,5 +206,10 @@ export class Monitor {
 
     // Update context with this block's data AFTER analysis is complete
     await this.context.updateWithBlock(blockNumber, txs);
+
+    // Send heartbeat ping if enough blocks have elapsed (best-effort, never blocks)
+    if (this.heartbeat) {
+      await this.heartbeat.maybePing(blockNumber);
+    }
   }
 }

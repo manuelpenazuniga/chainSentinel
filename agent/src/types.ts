@@ -123,6 +123,10 @@ export interface AgentConfig {
   llmTimeoutMs: number;
   telegramBotToken?: string;
   telegramChatId?: string;
+  /** SentinelHeartbeat contract address — when set, the agent pings every heartbeatIntervalBlocks. */
+  heartbeatAddress?: string;
+  /** Blocks between heartbeat pings (default: 50 ~= 5 min at 6s/block). */
+  heartbeatIntervalBlocks: number;
 }
 
 // ─── Alert Data ───
