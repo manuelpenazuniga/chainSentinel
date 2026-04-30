@@ -1,0 +1,37 @@
+# Claude
+CLAUDE.md
+technical-spec2.md
+progress.md
+next-steps.md
+pasos-manuales.md
+docs/
+
+# Copilot
+copilot-instructions.md
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+
+# Node
+node_modules/
+.env
+.env.local
+
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Build
+dist/
+build/
+.next/
