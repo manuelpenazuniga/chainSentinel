@@ -14,16 +14,16 @@ export interface ThreatEvent {
 }
 
 const THREAT_REPORTED_EVENT = {
-  type: "event" as const,
-  name: "ThreatReported" as const,
+  type: "event",
+  name: "ThreatReported",
   inputs: [
-    { name: "reporter", type: "address" as const, indexed: true },
-    { name: "targetContract", type: "address" as const, indexed: true },
-    { name: "threatScore", type: "uint256" as const, indexed: false },
-    { name: "attackType", type: "string" as const, indexed: false },
-    { name: "blockNumber", type: "uint256" as const, indexed: false },
+    { name: "reporter", type: "address", indexed: true },
+    { name: "targetContract", type: "address", indexed: true },
+    { name: "threatScore", type: "uint256", indexed: false },
+    { name: "attackType", type: "string", indexed: false },
+    { name: "blockNumber", type: "uint256", indexed: false },
   ],
-};
+} as const;
 
 export function useThreatEvents(limit?: number) {
   const publicClient = usePublicClient();
@@ -67,14 +67,23 @@ export function useThreatEvents(limit?: number) {
           }
         }
 
-        const items: ThreatEvent[] = logs.map((log) => ({
-          targetContract: log.args.targetContract ?? "0x",
-          threatScore: Number(log.args.threatScore ?? 0),
-          attackType: log.args.attackType ?? "UNKNOWN",
-          blockNumber: Number(log.args.blockNumber ?? log.blockNumber),
-          reporter: log.args.reporter ?? "0x",
-          timestamp: blockTimestamps.get(log.blockNumber) ?? Math.floor(Date.now() / 1000),
-        }));
+        const items: ThreatEvent[] = logs.map((log) => {
+          const args = log.args as {
+            reporter?: `0x${string}`;
+            targetContract?: `0x${string}`;
+            threatScore?: bigint;
+            attackType?: string;
+            blockNumber?: bigint;
+          };
+          return {
+            targetContract: args.targetContract ?? "0x",
+            threatScore: Number(args.threatScore ?? BigInt(0)),
+            attackType: args.attackType ?? "UNKNOWN",
+            blockNumber: Number(args.blockNumber ?? log.blockNumber),
+            reporter: args.reporter ?? "0x",
+            timestamp: blockTimestamps.get(log.blockNumber) ?? Math.floor(Date.now() / 1000),
+          };
+        });
 
         // Sort by block descending (most recent first)
         items.sort((a, b) => b.blockNumber - a.blockNumber);

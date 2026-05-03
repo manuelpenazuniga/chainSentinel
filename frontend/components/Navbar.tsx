@@ -1,14 +1,74 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useAccount, useConnect, useDisconnect } from "wagmi";
+import {
+  useAccount,
+  useChainId,
+  useConnect,
+  useDisconnect,
+  useSwitchChain,
+} from "wagmi";
+import { polkadotHubTestnet } from "@/lib/chain";
+
+function formatWalletError(error: unknown): string {
+  const message =
+    error instanceof Error ? error.message : "Wallet connection failed";
+
+  if (/user rejected/i.test(message)) return "Connection request was rejected.";
+  if (/connector not found/i.test(message)) return "No wallet extension detected.";
+  if (/switch chain/i.test(message)) return "Could not switch to Polkadot Hub TestNet.";
+
+  return message;
+}
 
 export function Navbar() {
   const pathname = usePathname();
   const { address, isConnected } = useAccount();
-  const { connect, connectors } = useConnect();
+  const chainId = useChainId();
+  const { connectAsync, connectors, isPending, error: connectError } = useConnect();
   const { disconnect } = useDisconnect();
+  const { switchChainAsync, isPending: isSwitchingChain, error: switchError } =
+    useSwitchChain();
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const preferredConnector = useMemo(() => {
+    const metaMaskConnector = connectors.find(
+      (connector) =>
+        /metamask/i.test(connector.name) || /metamask/i.test(connector.id)
+    );
+    return metaMaskConnector ?? connectors[0];
+  }, [connectors]);
+
+  const isWrongChain = isConnected && chainId !== polkadotHubTestnet.id;
+
+  async function handleConnect() {
+    setLocalError(null);
+
+    if (!preferredConnector) {
+      setLocalError("No wallet extension detected.");
+      return;
+    }
+
+    try {
+      await connectAsync({
+        connector: preferredConnector,
+        chainId: polkadotHubTestnet.id,
+      });
+    } catch (error) {
+      setLocalError(formatWalletError(error));
+    }
+  }
+
+  async function handleSwitchChain() {
+    setLocalError(null);
+    try {
+      await switchChainAsync({ chainId: polkadotHubTestnet.id });
+    } catch (error) {
+      setLocalError(formatWalletError(error));
+    }
+  }
 
   const links = [
     { href: "/", label: "Dashboard" },
@@ -59,12 +119,21 @@ export function Navbar() {
             </div>
           </div>
 
-          <div>
+          <div className="flex flex-col items-end gap-1">
             {isConnected ? (
               <div className="flex items-center gap-3">
                 <span className="text-sm text-gray-400 font-mono">
                   {address?.slice(0, 6)}...{address?.slice(-4)}
                 </span>
+                {isWrongChain ? (
+                  <button
+                    onClick={handleSwitchChain}
+                    disabled={isSwitchingChain}
+                    className="px-3 py-1.5 text-sm rounded-md border border-amber-500/60 text-amber-300 hover:bg-amber-500/10 transition-colors disabled:opacity-60"
+                  >
+                    {isSwitchingChain ? "Switching..." : "Switch Network"}
+                  </button>
+                ) : null}
                 <button
                   onClick={() => disconnect()}
                   className="px-3 py-1.5 text-sm rounded-md border border-gray-700 text-gray-300 hover:bg-gray-800 transition-colors"
@@ -74,12 +143,26 @@ export function Navbar() {
               </div>
             ) : (
               <button
-                onClick={() => connect({ connector: connectors[0] })}
-                className="px-4 py-2 text-sm font-medium rounded-md bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
+                onClick={handleConnect}
+                disabled={isPending}
+                className="px-4 py-2 text-sm font-medium rounded-md bg-emerald-600 hover:bg-emerald-500 text-white transition-colors disabled:opacity-60"
               >
-                Connect Wallet
+                {isPending ? "Connecting..." : "Connect Wallet"}
               </button>
             )}
+
+            {isWrongChain ? (
+              <p className="text-xs text-amber-400">
+                Connected to wrong chain. Use Polkadot Hub TestNet.
+              </p>
+            ) : null}
+            {localError || connectError || switchError ? (
+              <p className="max-w-72 text-right text-xs text-red-400">
+                {localError ??
+                  formatWalletError(connectError) ??
+                  formatWalletError(switchError)}
+              </p>
+            ) : null}
           </div>
         </div>
       </div>

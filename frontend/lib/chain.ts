@@ -1,15 +1,15 @@
 import { defineChain } from "viem";
 
+const PRIMARY_RPC =
+  process.env.NEXT_PUBLIC_RPC_URL ?? "https://services.polkadothub-rpc.com/testnet";
+
 export const polkadotHubTestnet = defineChain({
   id: 420420417,
   name: "Polkadot Hub TestNet",
   nativeCurrency: { decimals: 18, name: "PAS", symbol: "PAS" },
   rpcUrls: {
     default: {
-      http: [
-        "https://services.polkadothub-rpc.com/testnet",
-        "https://eth-rpc-testnet.polkadot.io/",
-      ],
+      http: [PRIMARY_RPC, "https://eth-rpc-testnet.polkadot.io/"],
     },
   },
   blockExplorers: {

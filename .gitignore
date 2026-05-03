@@ -17,7 +17,9 @@ copilot-instructions.md
 # Node
 node_modules/
 .env
-.env.local
+.env.*
+!.env.example
+!.env.production.example
 
 # Foundry
 contracts/out/
@@ -35,3 +37,4 @@ contracts/broadcast/
 dist/
 build/
 .next/
+*.tsbuildinfo

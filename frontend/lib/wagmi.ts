@@ -2,11 +2,13 @@ import { http, createConfig } from "wagmi";
 import { injected } from "wagmi/connectors";
 import { polkadotHubTestnet } from "./chain";
 
+const RPC_URL = process.env.NEXT_PUBLIC_RPC_URL;
+
 export const config = createConfig({
   chains: [polkadotHubTestnet],
-  connectors: [injected()],
+  connectors: [injected({ shimDisconnect: true })],
   transports: {
-    [polkadotHubTestnet.id]: http(),
+    [polkadotHubTestnet.id]: http(RPC_URL),
   },
 });
 
