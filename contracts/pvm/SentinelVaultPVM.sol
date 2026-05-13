@@ -81,11 +81,21 @@ contract SentinelVaultPVM {
     /// @notice Minimum threat score (0-100) required to trigger an emergency withdrawal
     uint256 public threshold;
 
-    /// @notice Block number of the last emergency withdrawal (for cooldown enforcement)
+    /// @notice Block number of the last `emergencyWithdrawAll` invocation.
+    /// @dev    Single-token emergency withdrawals (`emergencyWithdraw`,
+    ///         `emergencyWithdrawBatch`) use per-token cooldown via
+    ///         `lastEmergencyByToken` instead. See REVM SentinelVault.sol
+    ///         for the rationale.
     uint256 public lastEmergencyBlock;
 
     /// @notice Number of blocks that must pass between emergency withdrawals
     uint256 public cooldownBlocks;
+
+    /// @notice Per-token cooldown tracking. Independent of `lastEmergencyBlock`.
+    mapping(address => uint256) public lastEmergencyByToken;
+
+    /// @notice When true, all guardian-triggered emergency functions revert.
+    bool public paused;
 
     /// @notice Mapping of token address => deposited balance
     /// @dev address(0) represents the native token (DOT/PAS)
@@ -120,6 +130,8 @@ contract SentinelVaultPVM {
     event CooldownUpdated(uint256 newCooldownBlocks);
     event ContractWhitelisted(address indexed contractAddress);
     event ContractRemovedFromWhitelist(address indexed contractAddress);
+    event Paused(address indexed by);
+    event Unpaused(address indexed by);
 
     // ─── Errors ───────────────────────────────────────────────────────────────
 
@@ -133,6 +145,8 @@ contract SentinelVaultPVM {
     error CooldownActive(uint256 currentBlock, uint256 availableAt);
     error InvalidThreshold();
     error ReentrantCall();
+    error VaultPaused();
+    error InvalidBatchRange();
     /// @dev Emitted when a direct ERC-20 transfer() call returns false.
     ///      This replaces SafeERC20's revert-on-false behaviour.
     error ERC20TransferFailed(address token);
@@ -147,6 +161,11 @@ contract SentinelVaultPVM {
     modifier onlyGuardian() {
         if (guardian == address(0)) revert NoGuardianSet();
         if (msg.sender != guardian) revert NotGuardian();
+        _;
+    }
+
+    modifier whenNotPaused() {
+        if (paused) revert VaultPaused();
         _;
     }
 
@@ -275,18 +294,21 @@ contract SentinelVaultPVM {
     function emergencyWithdraw(address token, uint256 threatScore, string calldata reason)
         external
         onlyGuardian
+        whenNotPaused
         nonReentrant
     {
         if (threatScore < threshold) revert BelowThreshold(threatScore, threshold);
-        if (block.number < lastEmergencyBlock + cooldownBlocks) {
-            revert CooldownActive(block.number, lastEmergencyBlock + cooldownBlocks);
+
+        uint256 lastForToken = lastEmergencyByToken[token];
+        if (block.number < lastForToken + cooldownBlocks) {
+            revert CooldownActive(block.number, lastForToken + cooldownBlocks);
         }
 
         uint256 amount = balances[token];
         if (amount == 0) revert InsufficientBalance();
 
         balances[token] = 0;
-        lastEmergencyBlock = block.number;
+        lastEmergencyByToken[token] = block.number;
 
         if (token == address(0)) {
             (bool sent,) = payable(safeAddress).call{value: amount}("");
@@ -305,6 +327,7 @@ contract SentinelVaultPVM {
     function emergencyWithdrawAll(uint256 threatScore, string calldata reason)
         external
         onlyGuardian
+        whenNotPaused
         nonReentrant
     {
         if (threatScore < threshold) revert BelowThreshold(threatScore, threshold);
@@ -314,26 +337,74 @@ contract SentinelVaultPVM {
 
         lastEmergencyBlock = block.number;
 
-        // Withdraw native tokens
         uint256 nativeBalance = balances[address(0)];
         if (nativeBalance > 0) {
             balances[address(0)] = 0;
+            lastEmergencyByToken[address(0)] = block.number;
             (bool sent,) = payable(safeAddress).call{value: nativeBalance}("");
             require(sent, "Native transfer failed");
             emit EmergencyWithdrawExecuted(msg.sender, address(0), nativeBalance, threatScore, reason);
         }
 
-        // Withdraw all ERC-20 tokens
         for (uint256 i = 0; i < tokenList.length; i++) {
             address token = tokenList[i];
             uint256 amount = balances[token];
             if (amount > 0) {
                 balances[token] = 0;
+                lastEmergencyByToken[token] = block.number;
                 bool ok = IERC20Minimal(token).transfer(safeAddress, amount);
                 if (!ok) revert ERC20TransferFailed(token);
                 emit EmergencyWithdrawExecuted(msg.sender, token, amount, threatScore, reason);
             }
         }
+    }
+
+    /// @notice Execute emergency withdrawal for a slice of `tokenList`.
+    ///         Mirrors REVM SentinelVault.emergencyWithdrawBatch — see that
+    ///         contract's NatSpec for full semantic documentation.
+    function emergencyWithdrawBatch(
+        uint256 threatScore,
+        string calldata reason,
+        uint256 startIdx,
+        uint256 endIdx
+    ) external onlyGuardian whenNotPaused nonReentrant {
+        if (threatScore < threshold) revert BelowThreshold(threatScore, threshold);
+
+        uint256 listLen = tokenList.length;
+        if (endIdx > listLen) endIdx = listLen;
+        if (startIdx >= endIdx) revert InvalidBatchRange();
+
+        for (uint256 i = startIdx; i < endIdx; i++) {
+            address token = tokenList[i];
+            if (balances[token] == 0) continue;
+            uint256 lastForToken = lastEmergencyByToken[token];
+            if (block.number < lastForToken + cooldownBlocks) {
+                revert CooldownActive(block.number, lastForToken + cooldownBlocks);
+            }
+        }
+
+        for (uint256 i = startIdx; i < endIdx; i++) {
+            address token = tokenList[i];
+            uint256 amount = balances[token];
+            if (amount == 0) continue;
+            balances[token] = 0;
+            lastEmergencyByToken[token] = block.number;
+            bool ok = IERC20Minimal(token).transfer(safeAddress, amount);
+            if (!ok) revert ERC20TransferFailed(token);
+            emit EmergencyWithdrawExecuted(msg.sender, token, amount, threatScore, reason);
+        }
+    }
+
+    // ─── Pause Switch (Owner) ──────────────────────────────────────────────
+
+    function pause() external onlyOwner {
+        paused = true;
+        emit Paused(msg.sender);
+    }
+
+    function unpause() external onlyOwner {
+        paused = false;
+        emit Unpaused(msg.sender);
     }
 
     // ─── View Functions ───────────────────────────────────────────────────────
@@ -402,8 +473,13 @@ contract SentinelVaultPVM {
         return tokenList.length;
     }
 
-    /// @notice Check if the cooldown period is active
+    /// @notice Check if the global cooldown period is active (after `emergencyWithdrawAll`).
     function isCooldownActive() external view returns (bool) {
         return block.number < lastEmergencyBlock + cooldownBlocks;
+    }
+
+    /// @notice Check if the per-token cooldown for a specific token is active.
+    function isCooldownActiveForToken(address token) external view returns (bool) {
+        return block.number < lastEmergencyByToken[token] + cooldownBlocks;
     }
 }

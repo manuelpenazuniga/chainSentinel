@@ -1,20 +1,59 @@
 // Contract addresses — update after deploying to testnet (Steps 1-2)
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 
+// ─── REVM (primary VM) ─────────────────────────────────────────────────────
+
 export const VAULT_ADDRESS =
   (process.env.NEXT_PUBLIC_VAULT_ADDRESS as `0x${string}`) || ZERO_ADDRESS;
 
 export const REGISTRY_ADDRESS =
   (process.env.NEXT_PUBLIC_REGISTRY_ADDRESS as `0x${string}`) || ZERO_ADDRESS;
 
+// ─── PVM (parallel deployment, optional — see §4.2) ───────────────────────
+
+export const VAULT_ADDRESS_PVM =
+  (process.env.NEXT_PUBLIC_VAULT_ADDRESS_PVM as `0x${string}`) || ZERO_ADDRESS;
+
+export const REGISTRY_ADDRESS_PVM =
+  (process.env.NEXT_PUBLIC_REGISTRY_ADDRESS_PVM as `0x${string}`) || ZERO_ADDRESS;
+
+// ─── Factory (multi-user mode, optional — see §4.1) ───────────────────────
+
+export const FACTORY_ADDRESS =
+  (process.env.NEXT_PUBLIC_FACTORY_ADDRESS as `0x${string}`) || ZERO_ADDRESS;
+
+// ─── Heartbeat (agent liveness on-chain, optional — see §4.5) ─────────────
+
+export const HEARTBEAT_ADDRESS =
+  (process.env.NEXT_PUBLIC_HEARTBEAT_ADDRESS as `0x${string}`) || ZERO_ADDRESS;
+
 // Native token represented as address(0)
 export const NATIVE_TOKEN = ZERO_ADDRESS;
 
+// Mode flags ----------------------------------------------------------------
+
+export const HAS_PVM =
+  !!process.env.NEXT_PUBLIC_VAULT_ADDRESS_PVM &&
+  process.env.NEXT_PUBLIC_VAULT_ADDRESS_PVM !== ZERO_ADDRESS;
+
+export const IS_MULTI_USER =
+  !!process.env.NEXT_PUBLIC_FACTORY_ADDRESS &&
+  process.env.NEXT_PUBLIC_FACTORY_ADDRESS !== ZERO_ADDRESS;
+
+export const HAS_HEARTBEAT =
+  !!process.env.NEXT_PUBLIC_HEARTBEAT_ADDRESS &&
+  process.env.NEXT_PUBLIC_HEARTBEAT_ADDRESS !== ZERO_ADDRESS;
+
 // Check if contracts are properly configured (env vars set and not zero address fallbacks)
+// In multi-user mode, the factory replaces the requirement for a vault address.
 export const IS_CONFIGURED =
-  !!process.env.NEXT_PUBLIC_VAULT_ADDRESS &&
+  (
+    (
+      !!process.env.NEXT_PUBLIC_VAULT_ADDRESS &&
+      process.env.NEXT_PUBLIC_VAULT_ADDRESS !== ZERO_ADDRESS
+    ) || IS_MULTI_USER
+  ) &&
   !!process.env.NEXT_PUBLIC_REGISTRY_ADDRESS &&
-  process.env.NEXT_PUBLIC_VAULT_ADDRESS !== ZERO_ADDRESS &&
   process.env.NEXT_PUBLIC_REGISTRY_ADDRESS !== ZERO_ADDRESS;
 
 export const VAULT_ABI = [
@@ -119,4 +158,46 @@ export const REGISTRY_ABI = [
   // Events
   { type: "event", name: "ThreatReported", inputs: [{ name: "reporter", type: "address", indexed: true }, { name: "targetContract", type: "address", indexed: true }, { name: "threatScore", type: "uint256", indexed: false }, { name: "attackType", type: "string", indexed: false }, { name: "blockNumber", type: "uint256", indexed: false }] },
   { type: "event", name: "ContractBlacklisted", inputs: [{ name: "contractAddress", type: "address", indexed: true }, { name: "aggregateScore", type: "uint256", indexed: false }] },
+] as const;
+
+// ─── VaultFactory ABI (multi-user mode) ───────────────────────────────────
+
+export const FACTORY_ABI = [
+  { type: "function", name: "createVault", inputs: [
+      { name: "safeAddress", type: "address" },
+      { name: "threshold", type: "uint256" }
+    ], outputs: [{ name: "vault", type: "address" }], stateMutability: "nonpayable" },
+  { type: "function", name: "getUserVaults", inputs: [{ name: "user", type: "address" }],
+    outputs: [{ name: "", type: "address[]" }], stateMutability: "view" },
+  { type: "function", name: "getAllVaults", inputs: [],
+    outputs: [{ name: "", type: "address[]" }], stateMutability: "view" },
+  { type: "function", name: "getVaultCount", inputs: [],
+    outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "serviceGuardian", inputs: [],
+    outputs: [{ name: "", type: "address" }], stateMutability: "view" },
+  { type: "event", name: "VaultCreated", inputs: [
+      { name: "owner", type: "address", indexed: true },
+      { name: "vault", type: "address", indexed: true },
+      { name: "safeAddress", type: "address", indexed: false },
+      { name: "threshold", type: "uint256", indexed: false }
+    ] },
+] as const;
+
+// ─── SentinelHeartbeat ABI (agent liveness) ───────────────────────────────
+
+export const HEARTBEAT_ABI = [
+  {
+    type: "function", name: "getStatus", inputs: [],
+    outputs: [
+      { name: "_agent", type: "address" },
+      { name: "_lastPingBlock", type: "uint256" },
+      { name: "_lastPingTimestamp", type: "uint256" },
+      { name: "_pingCount", type: "uint256" },
+      { name: "_alive", type: "bool" },
+      { name: "_blocksSinceLastPing", type: "uint256" },
+    ],
+    stateMutability: "view",
+  },
+  { type: "function", name: "isAlive", inputs: [], outputs: [{ name: "", type: "bool" }], stateMutability: "view" },
+  { type: "function", name: "stalenessThreshold", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
 ] as const;

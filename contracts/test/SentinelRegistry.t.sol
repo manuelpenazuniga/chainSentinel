@@ -482,4 +482,216 @@ contract SentinelRegistryTest is Test {
         assertEq(registry.aggregateScore(maliciousContract), 70);
         assertEq(registry.reportCount(maliciousContract), 2);
     }
+
+    // ─── Report TTL & Recompute (§2.6) ───────────────────────────────────
+
+    event ReportTTLUpdated(uint256 newTTL);
+    event AggregateScoreRecomputed(
+        address indexed contractAddress,
+        uint256 previousScore,
+        uint256 newScore,
+        uint256 freshReportCount,
+        bool blacklistChanged
+    );
+    event ContractUnblacklisted(address indexed contractAddress, uint256 aggregateScore);
+
+    function test_reportTTL_defaultIsZero() public view {
+        assertEq(registry.reportTTL(), 0, "TTL must default to 0 (disabled)");
+    }
+
+    function test_setReportTTL_updatesValue() public {
+        registry.setReportTTL(432_000); // ~30 days at 6s/block
+        assertEq(registry.reportTTL(), 432_000);
+    }
+
+    function test_setReportTTL_emitsEvent() public {
+        vm.expectEmit(false, false, false, true);
+        emit ReportTTLUpdated(100_800);
+        registry.setReportTTL(100_800);
+    }
+
+    function test_setReportTTL_revertsIfNotOwner() public {
+        vm.prank(reporter1);
+        vm.expectRevert(SentinelRegistry.NotOwner.selector);
+        registry.setReportTTL(1000);
+    }
+
+    function test_getThreatScoreFresh_ttlDisabledReturnsStoredAggregate() public {
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 70, "DRAIN", "0xabc");
+
+        (uint256 fresh, uint256 freshCount, uint256 totalCount) = registry.getThreatScoreFresh(maliciousContract);
+        assertEq(fresh, 70);
+        assertEq(freshCount, 1);
+        assertEq(totalCount, 1);
+    }
+
+    function test_getThreatScoreFresh_ignoresExpiredReports() public {
+        vm.roll(100);
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 90, "DRAIN", "0xabc");
+
+        registry.setReportTTL(50);
+
+        // At block 200, the report (from block 100) is 100 blocks old → expired (TTL=50)
+        vm.roll(200);
+
+        (uint256 fresh, uint256 freshCount, uint256 totalCount) = registry.getThreatScoreFresh(maliciousContract);
+        assertEq(fresh, 0, "expired report should not contribute");
+        assertEq(freshCount, 0);
+        assertEq(totalCount, 1);
+    }
+
+    function test_getThreatScoreFresh_keepsReportAtTTLBoundary() public {
+        vm.roll(100);
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 80, "DRAIN", "0xabc");
+
+        registry.setReportTTL(50);
+        vm.roll(150); // 100 + 50 == 150 → boundary, fresh
+
+        (uint256 fresh, uint256 freshCount,) = registry.getThreatScoreFresh(maliciousContract);
+        assertEq(fresh, 80, "report at TTL boundary still fresh");
+        assertEq(freshCount, 1);
+    }
+
+    function test_getThreatScoreFresh_mixedFreshAndExpired() public {
+        registry.setReportTTL(100);
+
+        vm.roll(100);
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 50, "DRAIN", "old");
+
+        vm.roll(150);
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 90, "DRAIN", "recent");
+
+        // At block 250: report at 100 → 100+100=200 < 250 → expired.
+        //               report at 150 → 150+100=250 >= 250 → fresh (boundary).
+        vm.roll(250);
+
+        (uint256 fresh, uint256 freshCount, uint256 totalCount) = registry.getThreatScoreFresh(maliciousContract);
+        assertEq(fresh, 90, "only fresh report should count");
+        assertEq(freshCount, 1);
+        assertEq(totalCount, 2);
+    }
+
+    function test_getThreatScoreFresh_emptyContract() public view {
+        (uint256 fresh, uint256 freshCount, uint256 totalCount) = registry.getThreatScoreFresh(maliciousContract);
+        assertEq(fresh, 0);
+        assertEq(freshCount, 0);
+        assertEq(totalCount, 0);
+    }
+
+    function test_recomputeAggregateScore_updatesStoredAggregate() public {
+        registry.setReportTTL(100);
+
+        vm.roll(100);
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 60, "DRAIN", "old1");
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 80, "DRAIN", "old2");
+
+        // Both reports at block 100; both fresh now → average 70
+        assertEq(registry.aggregateScore(maliciousContract), 70);
+
+        // Advance well past TTL
+        vm.roll(250);
+        registry.recomputeAggregateScore(maliciousContract);
+
+        // Both expired → aggregate drops to 0
+        assertEq(registry.aggregateScore(maliciousContract), 0);
+    }
+
+    function test_recomputeAggregateScore_unblacklistsWhenScoreDrops() public {
+        // Single report at 95 → auto-blacklist (>= 90)
+        vm.roll(100);
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 95, "DRAIN", "critical");
+        assertTrue(registry.blacklisted(maliciousContract));
+
+        // TTL=50; advance past expiry
+        registry.setReportTTL(50);
+        vm.roll(200);
+
+        vm.expectEmit(true, false, false, true);
+        emit ContractUnblacklisted(maliciousContract, 0);
+        registry.recomputeAggregateScore(maliciousContract);
+
+        assertFalse(registry.blacklisted(maliciousContract));
+        assertEq(registry.aggregateScore(maliciousContract), 0);
+    }
+
+    function test_recomputeAggregateScore_blacklistsViaFreshReports() public {
+        // Setup: stored aggregate is somehow below threshold despite fresh high-score
+        // reports. We achieve this by manipulating: report low, then high — running avg
+        // is mid; but if we expire the low report via TTL, fresh avg jumps to high.
+        registry.setReportTTL(100);
+
+        vm.roll(100);
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 50, "DRAIN", "low");
+
+        vm.roll(150);
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 95, "DRAIN", "high");
+
+        // Stored running avg: (50 + 95) / 2 = 72 → not blacklisted
+        assertEq(registry.aggregateScore(maliciousContract), 72);
+        assertFalse(registry.blacklisted(maliciousContract));
+
+        // Move forward: low report (block 100) expires (TTL=100, now block 220 > 200);
+        // high report (block 150) still fresh (150+100=250 >= 220).
+        vm.roll(220);
+        registry.recomputeAggregateScore(maliciousContract);
+
+        // Fresh avg = 95 → should auto-blacklist
+        assertEq(registry.aggregateScore(maliciousContract), 95);
+        assertTrue(registry.blacklisted(maliciousContract), "should be blacklisted via recompute");
+    }
+
+    function test_recomputeAggregateScore_emitsEvent() public {
+        vm.roll(100);
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 70, "DRAIN", "x");
+
+        // No TTL: stored aggregate already 70; recompute confirms it.
+        vm.expectEmit(true, false, false, true);
+        emit AggregateScoreRecomputed(maliciousContract, 70, 70, 1, false);
+        registry.recomputeAggregateScore(maliciousContract);
+    }
+
+    function test_recomputeAggregateScore_revertsOnZeroAddress() public {
+        vm.expectRevert(SentinelRegistry.ZeroAddress.selector);
+        registry.recomputeAggregateScore(address(0));
+    }
+
+    function test_recomputeAggregateScore_callableByAnyone() public {
+        vm.roll(100);
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 70, "DRAIN", "x");
+
+        // Anyone (not just owner / reporter) can call — pays own gas
+        vm.prank(unauthorized);
+        registry.recomputeAggregateScore(maliciousContract);
+    }
+
+    function test_recomputeAggregateScore_emptyContractIsNoOp() public {
+        registry.recomputeAggregateScore(maliciousContract);
+        assertEq(registry.aggregateScore(maliciousContract), 0);
+        assertFalse(registry.blacklisted(maliciousContract));
+    }
+
+    function test_reportThreat_unaffectedByTTL() public {
+        // Documented behavior: reportThreat keeps using the running average even when
+        // TTL is set. TTL only applies to recompute and getThreatScoreFresh — this
+        // keeps the hot path (reportThreat) cheap and predictable.
+        registry.setReportTTL(1);
+
+        vm.roll(100);
+        vm.prank(reporter1);
+        registry.reportThreat(maliciousContract, 80, "DRAIN", "x");
+
+        assertEq(registry.aggregateScore(maliciousContract), 80, "running avg unaffected by TTL");
+    }
 }

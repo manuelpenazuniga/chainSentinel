@@ -18,6 +18,16 @@ contract SentinelVault is ReentrancyGuard {
     /// @notice The owner of the vault (the user who deposited funds)
     address public owner;
 
+    /// @notice The address proposed to become the new owner.
+    /// @dev    Two-step ownership transfer (Ownable2Step pattern): the current owner
+    ///         calls `transferOwnership(newOwner)` which sets `pendingOwner`. The
+    ///         transfer only completes when `pendingOwner` calls `acceptOwnership()`.
+    ///         This prevents accidentally locking the vault by transferring to an
+    ///         address that cannot sign (typo, contract without access, etc.).
+    ///         A pending transfer can be cancelled by calling
+    ///         `transferOwnership(address(0))` from the current owner.
+    address public pendingOwner;
+
     /// @notice The guardian address (AI agent) authorized to execute emergency withdrawals
     address public guardian;
 
@@ -28,11 +38,31 @@ contract SentinelVault is ReentrancyGuard {
     /// @notice Minimum threat score (0-100) required to trigger an emergency withdrawal
     uint256 public threshold;
 
-    /// @notice Block number of the last emergency withdrawal (for cooldown enforcement)
+    /// @notice Block number of the last `emergencyWithdrawAll` invocation.
+    /// @dev    Single-token emergency withdrawals (`emergencyWithdraw`,
+    ///         `emergencyWithdrawBatch`) do NOT update this — they use
+    ///         per-token cooldown tracking via `lastEmergencyByToken` instead.
+    ///         This separation lets the agent rescue token B even if token A
+    ///         was just rescued (the original `lastEmergencyBlock`-only design
+    ///         blocked sequential rescues of distinct tokens).
     uint256 public lastEmergencyBlock;
 
     /// @notice Number of blocks that must pass between emergency withdrawals
     uint256 public cooldownBlocks;
+
+    /// @notice Per-token cooldown tracking. `lastEmergencyByToken[token]` is
+    ///         the block number where token (or address(0) for native) was last
+    ///         rescued via emergencyWithdraw or emergencyWithdrawBatch.
+    /// @dev    Independent of `lastEmergencyBlock`. emergencyWithdrawAll updates
+    ///         BOTH this mapping (for every transferred token) AND lastEmergencyBlock.
+    mapping(address => uint256) public lastEmergencyByToken;
+
+    /// @notice When true, all guardian-triggered emergency functions revert.
+    ///         Owner-only operations (deposit, withdraw, configuration) keep
+    ///         working — the pause is a "disable AI agent" switch, not a freeze.
+    /// @dev    Use cases: rolling out a new agent version, suspected guardian
+    ///         compromise, runtime bug producing false positives.
+    bool public paused;
 
     /// @notice Mapping of token address => deposited balance
     /// @dev address(0) represents the native token (DOT/PAS)
@@ -67,6 +97,10 @@ contract SentinelVault is ReentrancyGuard {
     event CooldownUpdated(uint256 newCooldownBlocks);
     event ContractWhitelisted(address indexed contractAddress);
     event ContractRemovedFromWhitelist(address indexed contractAddress);
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event Paused(address indexed by);
+    event Unpaused(address indexed by);
 
     // ─── Errors ───
 
@@ -79,6 +113,9 @@ contract SentinelVault is ReentrancyGuard {
     error BelowThreshold(uint256 provided, uint256 required);
     error CooldownActive(uint256 currentBlock, uint256 availableAt);
     error InvalidThreshold();
+    error NotPendingOwner();
+    error VaultPaused();
+    error InvalidBatchRange();
 
     // ─── Modifiers ───
 
@@ -90,6 +127,11 @@ contract SentinelVault is ReentrancyGuard {
     modifier onlyGuardian() {
         if (guardian == address(0)) revert NoGuardianSet();
         if (msg.sender != guardian) revert NotGuardian();
+        _;
+    }
+
+    modifier whenNotPaused() {
+        if (paused) revert VaultPaused();
         _;
     }
 
@@ -106,6 +148,30 @@ contract SentinelVault is ReentrancyGuard {
     }
 
     // ─── Owner Functions ───
+
+    /// @notice Start a two-step ownership transfer.
+    /// @dev    Sets `pendingOwner` but does NOT change `owner`. The proposed
+    ///         address must call `acceptOwnership()` to complete the transfer.
+    ///         Passing `address(0)` cancels any pending transfer (since
+    ///         `acceptOwnership` requires `msg.sender == pendingOwner` and
+    ///         `msg.sender` can never be the zero address).
+    /// @param newOwner The address proposed to take over ownership.
+    function transferOwnership(address newOwner) external onlyOwner {
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    /// @notice Complete a two-step ownership transfer.
+    /// @dev    Must be called by the current `pendingOwner`. Clears `pendingOwner`
+    ///         and updates `owner`. After this call, the previous owner loses
+    ///         all owner-only privileges.
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        address previousOwner = owner;
+        owner = msg.sender;
+        delete pendingOwner;
+        emit OwnershipTransferred(previousOwner, msg.sender);
+    }
 
     /// @notice Deposit ERC-20 tokens into the vault
     /// @param token The ERC-20 token address
@@ -208,18 +274,22 @@ contract SentinelVault is ReentrancyGuard {
     function emergencyWithdraw(address token, uint256 threatScore, string calldata reason)
         external
         onlyGuardian
+        whenNotPaused
         nonReentrant
     {
         if (threatScore < threshold) revert BelowThreshold(threatScore, threshold);
-        if (block.number < lastEmergencyBlock + cooldownBlocks) {
-            revert CooldownActive(block.number, lastEmergencyBlock + cooldownBlocks);
+
+        // Per-token cooldown: rescuing token A does not block rescuing token B.
+        uint256 lastForToken = lastEmergencyByToken[token];
+        if (block.number < lastForToken + cooldownBlocks) {
+            revert CooldownActive(block.number, lastForToken + cooldownBlocks);
         }
 
         uint256 amount = balances[token];
         if (amount == 0) revert InsufficientBalance();
 
         balances[token] = 0;
-        lastEmergencyBlock = block.number;
+        lastEmergencyByToken[token] = block.number;
 
         if (token == address(0)) {
             (bool sent,) = payable(safeAddress).call{value: amount}("");
@@ -237,6 +307,7 @@ contract SentinelVault is ReentrancyGuard {
     function emergencyWithdrawAll(uint256 threatScore, string calldata reason)
         external
         onlyGuardian
+        whenNotPaused
         nonReentrant
     {
         if (threatScore < threshold) revert BelowThreshold(threatScore, threshold);
@@ -250,6 +321,7 @@ contract SentinelVault is ReentrancyGuard {
         uint256 nativeBalance = balances[address(0)];
         if (nativeBalance > 0) {
             balances[address(0)] = 0;
+            lastEmergencyByToken[address(0)] = block.number;
             (bool sent,) = payable(safeAddress).call{value: nativeBalance}("");
             require(sent, "Native transfer failed");
             emit EmergencyWithdrawExecuted(msg.sender, address(0), nativeBalance, threatScore, reason);
@@ -261,10 +333,88 @@ contract SentinelVault is ReentrancyGuard {
             uint256 amount = balances[token];
             if (amount > 0) {
                 balances[token] = 0;
+                lastEmergencyByToken[token] = block.number;
                 IERC20(token).safeTransfer(safeAddress, amount);
                 emit EmergencyWithdrawExecuted(msg.sender, token, amount, threatScore, reason);
             }
         }
+    }
+
+    /// @notice Execute emergency withdrawal for a slice of `tokenList`.
+    /// @dev    Designed for vaults with many tokens where `emergencyWithdrawAll`
+    ///         would exceed the block gas limit. The agent calls this with
+    ///         increasing slices until the entire list is rescued.
+    ///
+    ///         Cooldown semantics:
+    ///         - Per-token cooldown enforced for EACH token in the slice that
+    ///           has a positive balance. If any one of them is in cooldown,
+    ///           the call reverts entirely (atomic — no partial rescue).
+    ///         - Does NOT touch `lastEmergencyBlock` (that is reserved for
+    ///           `emergencyWithdrawAll`). Therefore, calling
+    ///           `emergencyWithdrawBatch` does NOT block a follow-up
+    ///           `emergencyWithdrawAll` (and vice versa, except via per-token
+    ///           cooldowns set by All).
+    ///         - Native token (address(0)) is NEVER processed by this function.
+    ///           Use `emergencyWithdraw(address(0), ...)` separately.
+    /// @param threatScore Threat score (must be >= threshold)
+    /// @param reason      Human-readable explanation
+    /// @param startIdx    Inclusive start index into `tokenList`
+    /// @param endIdx      Exclusive end index. Clamped to `tokenList.length` if larger.
+    function emergencyWithdrawBatch(
+        uint256 threatScore,
+        string calldata reason,
+        uint256 startIdx,
+        uint256 endIdx
+    ) external onlyGuardian whenNotPaused nonReentrant {
+        if (threatScore < threshold) revert BelowThreshold(threatScore, threshold);
+
+        uint256 listLen = tokenList.length;
+        if (endIdx > listLen) endIdx = listLen;
+        if (startIdx >= endIdx) revert InvalidBatchRange();
+
+        // Pre-check cooldown for every token with a positive balance in the slice.
+        // We do this in a separate pass so that a partial transfer never happens
+        // (atomic semantics — either the whole slice rescues or nothing).
+        for (uint256 i = startIdx; i < endIdx; i++) {
+            address token = tokenList[i];
+            if (balances[token] == 0) continue;
+            uint256 lastForToken = lastEmergencyByToken[token];
+            if (block.number < lastForToken + cooldownBlocks) {
+                revert CooldownActive(block.number, lastForToken + cooldownBlocks);
+            }
+        }
+
+        // Transfer pass.
+        for (uint256 i = startIdx; i < endIdx; i++) {
+            address token = tokenList[i];
+            uint256 amount = balances[token];
+            if (amount == 0) continue;
+            balances[token] = 0;
+            lastEmergencyByToken[token] = block.number;
+            IERC20(token).safeTransfer(safeAddress, amount);
+            emit EmergencyWithdrawExecuted(msg.sender, token, amount, threatScore, reason);
+        }
+    }
+
+    // ─── Pause Switch (Owner) ──────────────────────────────────────────────
+    //
+    // The `paused` flag disables ALL guardian-triggered emergency functions
+    // (`emergencyWithdraw`, `emergencyWithdrawAll`, `emergencyWithdrawBatch`).
+    // The owner retains full control: deposits, withdrawals, and configuration
+    // changes work as usual. This is a safety valve for the user — if the AI
+    // agent appears to misbehave (false positives, suspected key compromise),
+    // pause it without giving up access to the funds.
+
+    /// @notice Pause guardian emergency operations.
+    function pause() external onlyOwner {
+        paused = true;
+        emit Paused(msg.sender);
+    }
+
+    /// @notice Resume guardian emergency operations.
+    function unpause() external onlyOwner {
+        paused = false;
+        emit Unpaused(msg.sender);
     }
 
     // ─── View Functions ───
@@ -322,9 +472,17 @@ contract SentinelVault is ReentrancyGuard {
         return tokenList.length;
     }
 
-    /// @notice Check if the cooldown period is active
+    /// @notice Check if the global cooldown period is active.
+    /// @dev    Reflects only `emergencyWithdrawAll` cooldown. For per-token
+    ///         single-rescue cooldown, use `isCooldownActiveForToken`.
     function isCooldownActive() external view returns (bool) {
         return block.number < lastEmergencyBlock + cooldownBlocks;
+    }
+
+    /// @notice Check if the per-token cooldown for a specific token is active.
+    /// @param  token The token address (`address(0)` for native).
+    function isCooldownActiveForToken(address token) external view returns (bool) {
+        return block.number < lastEmergencyByToken[token] + cooldownBlocks;
     }
 
     // ─── Receive function ───

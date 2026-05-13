@@ -1,6 +1,8 @@
 import { ethers } from "ethers";
 import { ThreatAssessment, ExecutorResult, AgentConfig, EscalationLevel } from "./types.js";
 import { GasPriorityEstimator } from "./gas-priority.js";
+import { emergencyWithdraws, simulationReverts, threatReports } from "./metrics.js";
+import { captureException } from "./sentry.js";
 import { createLogger } from "./logger.js";
 
 const logger = createLogger("executor");
@@ -205,6 +207,7 @@ export class Executor {
       return null;
     } catch (error) {
       const reason = this.extractRevertReason(error);
+      simulationReverts.inc({ method, vm: label });
       logger.warn(`[${label}] Simulation REVERTED: ${method} - ${reason}`);
       return reason;
     }
@@ -253,6 +256,7 @@ export class Executor {
     );
 
     if (revertReason) {
+      emergencyWithdraws.inc({ success: "false", vm: target.label, level: "EMERGENCY_WITHDRAW_ALL" });
       return {
         success: false,
         error: `Simulation reverted: ${revertReason}`,
@@ -282,6 +286,7 @@ export class Executor {
         `Block: ${receipt.blockNumber}`
       );
 
+      emergencyWithdraws.inc({ success: "true", vm: target.label, level: "EMERGENCY_WITHDRAW_ALL" });
       return {
         success: true,
         txHash: receipt.hash,
@@ -293,6 +298,11 @@ export class Executor {
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       logger.error(`[${target.label}] Emergency withdraw ALL failed: ${errorMsg}`);
+      emergencyWithdraws.inc({ success: "false", vm: target.label, level: "EMERGENCY_WITHDRAW_ALL" });
+      captureException(error, {
+        tags: { phase: "emergency_withdraw_all", vm: target.label },
+        extra: { score: assessment.score, txHash: assessment.transaction.hash },
+      });
       return {
         success: false,
         error: errorMsg,
@@ -322,6 +332,7 @@ export class Executor {
     );
 
     if (revertReason) {
+      emergencyWithdraws.inc({ success: "false", vm: target.label, level: "DEFENSIVE_WITHDRAW" });
       return {
         success: false,
         error: `Simulation reverted: ${revertReason}`,
@@ -352,6 +363,7 @@ export class Executor {
         `Block: ${receipt.blockNumber}`
       );
 
+      emergencyWithdraws.inc({ success: "true", vm: target.label, level: "DEFENSIVE_WITHDRAW" });
       return {
         success: true,
         txHash: receipt.hash,
@@ -363,6 +375,11 @@ export class Executor {
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       logger.error(`[${target.label}] Defensive withdraw failed: ${errorMsg}`);
+      emergencyWithdraws.inc({ success: "false", vm: target.label, level: "DEFENSIVE_WITHDRAW" });
+      captureException(error, {
+        tags: { phase: "defensive_withdraw", vm: target.label },
+        extra: { score: assessment.score, txHash: assessment.transaction.hash },
+      });
       return {
         success: false,
         error: errorMsg,
@@ -379,6 +396,7 @@ export class Executor {
     assessment: ThreatAssessment,
     target: VaultTarget
   ): Promise<ExecutorResult> {
+    const escalation = determineEscalation(assessment.score, assessment.llmUsed);
     const evidence = `tx:${assessment.transaction.hash}|score:${assessment.score}|rules:${assessment.triggeredRules.join(",")}`;
 
     // Build structured playbook from the assessment
@@ -407,6 +425,7 @@ export class Executor {
 
     if (revertReason) {
       logger.warn(`[${target.label}] Report simulation reverted: ${revertReason}`);
+      threatReports.inc({ level: escalation, success: "false", vm: target.label });
       return {
         success: false,
         error: `Simulation reverted: ${revertReason}`,
@@ -443,6 +462,7 @@ export class Executor {
         `Target: ${assessment.transaction.to}, Score: ${assessment.score}, Tx: ${receipt.hash}`
       );
 
+      threatReports.inc({ level: escalation, success: "true", vm: target.label });
       return {
         success: true,
         txHash: receipt.hash,
@@ -454,6 +474,7 @@ export class Executor {
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       logger.warn(`[${target.label}] Failed to report threat to registry: ${errorMsg}`);
+      threatReports.inc({ level: escalation, success: "false", vm: target.label });
       return {
         success: false,
         error: errorMsg,

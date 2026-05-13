@@ -11,6 +11,9 @@ import {
   useSwitchChain,
 } from "wagmi";
 import { polkadotHubTestnet } from "@/lib/chain";
+import { VaultSelector } from "./VaultSelector";
+import { VmToggle } from "./VmToggle";
+import { AgentLivenessBadge } from "./AgentLivenessBadge";
 
 function formatWalletError(error: unknown): string {
   const message =
@@ -121,7 +124,10 @@ export function Navbar() {
 
           <div className="flex flex-col items-end gap-1">
             {isConnected ? (
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap justify-end">
+                <AgentLivenessBadge compact />
+                <VmToggle />
+                <VaultSelector />
                 <span className="text-sm text-gray-400 font-mono">
                   {address?.slice(0, 6)}...{address?.slice(-4)}
                 </span>

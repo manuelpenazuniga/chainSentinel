@@ -3,9 +3,11 @@
 import { useState } from "react";
 import { parseEther } from "viem";
 import { useWriteContract, useWaitForTransactionReceipt } from "wagmi";
-import { VAULT_ABI, VAULT_ADDRESS, IS_CONFIGURED } from "@/lib/contracts";
+import { VAULT_ABI, IS_CONFIGURED } from "@/lib/contracts";
+import { useVault } from "@/lib/VaultContext";
 
 export function DepositForm() {
+  const { selectedVault } = useVault();
   const [amount, setAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
   const { data: hash, writeContract, isPending } = useWriteContract();
@@ -13,15 +15,21 @@ export function DepositForm() {
     hash,
   });
 
+  const canDeposit = !!selectedVault && IS_CONFIGURED;
+
   function handleDeposit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     if (!amount || parseFloat(amount) <= 0) return;
+    if (!selectedVault) {
+      setError("No vault selected");
+      return;
+    }
 
     try {
       const value = parseEther(amount);
       writeContract({
-        address: VAULT_ADDRESS,
+        address: selectedVault,
         abi: VAULT_ABI,
         functionName: "depositNative",
         value,
@@ -62,8 +70,14 @@ export function DepositForm() {
 
         <button
           type="submit"
-          disabled={!IS_CONFIGURED || isPending || isConfirming || !amount || parseFloat(amount) <= 0}
-          title={!IS_CONFIGURED ? "Contract addresses not configured" : undefined}
+          disabled={!canDeposit || isPending || isConfirming || !amount || parseFloat(amount) <= 0}
+          title={
+            !IS_CONFIGURED
+              ? "Contract addresses not configured"
+              : !selectedVault
+              ? "Connect your wallet and select a vault"
+              : undefined
+          }
           className="w-full py-2.5 px-4 rounded-lg font-medium text-sm bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {isPending

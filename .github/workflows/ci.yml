@@ -1,0 +1,131 @@
+# ============================================================================
+# ChainSentinel — Continuous Integration
+# ============================================================================
+#
+# Three independent jobs run in parallel on every push and PR:
+#
+#   contracts → forge build, forge test, forge fmt --check
+#   agent     → npm ci + tsc --noEmit + vitest
+#   frontend  → npm ci + next build (Turbopack)
+#
+# Jobs are intentionally decoupled — a frontend-only PR does not need to wait
+# for forge tests, and vice versa. GitHub Actions reports each job
+# independently in the PR check list, so reviewers can see at a glance which
+# layer changed and whether it broke.
+# ============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-flight runs for the same PR/branch when a new commit lands —
+# saves CI minutes and avoids race conditions on shared caches.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────
+  # Smart Contracts (Solidity / Foundry)
+  # ────────────────────────────────────────────────────────────────────────
+  contracts:
+    name: Contracts (forge build / test / fmt)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Show Foundry version
+        run: forge --version
+
+      - name: Check formatting
+        run: forge fmt --check
+
+      - name: Build (with size report)
+        run: forge build --sizes
+
+      - name: Run all tests (unit + invariants + PVM equivalence)
+        run: forge test -vvv
+
+  # ────────────────────────────────────────────────────────────────────────
+  # AI Agent (Node.js / TypeScript)
+  # ────────────────────────────────────────────────────────────────────────
+  agent:
+    name: Agent (tsc + vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: agent/package-lock.json
+
+      # Native build deps for better-sqlite3 (persistence backend).
+      # ubuntu-latest already ships build-essential and python3, so this is
+      # a defensive ensure rather than a strict requirement.
+      - name: Ensure native build tools
+        run: |
+          which python3 && python3 --version
+          which g++ && g++ --version
+
+      - name: Install dependencies (frozen lockfile)
+        run: npm ci
+
+      - name: Type-check (no emit)
+        run: npx tsc --noEmit
+
+      - name: Run tests (vitest)
+        run: npm test
+        env:
+          # Tests should not require real network/keys; provide harmless dummies.
+          GEMINI_API_KEY: dummy
+          AGENT_PRIVATE_KEY: "0x0000000000000000000000000000000000000000000000000000000000000001"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Frontend (Next.js / TypeScript)
+  # ────────────────────────────────────────────────────────────────────────
+  frontend:
+    name: Frontend (next build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies (frozen lockfile)
+        run: npm ci
+
+      - name: Build (Next.js + Turbopack)
+        run: npm run build
+        env:
+          # Provide dummy values so the build doesn't trip on missing env vars.
+          # Real values come from Vercel/Netlify env config in deploys.
+          NEXT_PUBLIC_VAULT_ADDRESS: "0x0000000000000000000000000000000000000001"
+          NEXT_PUBLIC_REGISTRY_ADDRESS: "0x0000000000000000000000000000000000000002"

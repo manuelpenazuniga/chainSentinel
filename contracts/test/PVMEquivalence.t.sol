@@ -110,11 +110,18 @@ interface IVault {
     function removeFromWhitelist(address contractAddress) external;
     function emergencyWithdraw(address token, uint256 threatScore, string calldata reason) external;
     function emergencyWithdrawAll(uint256 threatScore, string calldata reason) external;
+    function emergencyWithdrawBatch(uint256 threatScore, string calldata reason, uint256 startIdx, uint256 endIdx) external;
+
+    function pause() external;
+    function unpause() external;
+    function paused() external view returns (bool);
+    function lastEmergencyByToken(address) external view returns (uint256);
 
     function getBalance(address token) external view returns (uint256);
     function getTokenCount() external view returns (uint256);
     function isWhitelisted(address) external view returns (bool);
     function isCooldownActive() external view returns (bool);
+    function isCooldownActiveForToken(address token) external view returns (bool);
     function getAllBalances() external view returns (address[] memory tokens, uint256[] memory amounts);
     function getVaultStatus()
         external
@@ -445,51 +452,87 @@ abstract contract VaultEquivalenceBase is Test {
         vault.emergencyWithdraw(address(token), 90, "drain");
     }
 
-    // ─── Cooldown ────────────────────────────────────────────────────────────
+    // ─── Cooldown (per-token, see §2.4 of mejoras-tecnicas.md) ──────────────
 
-    function test_cooldown_blockSecondWithdrawInSameBlock() public {
+    function test_cooldown_perTokenBlocksSameTokenWithinWindow() public {
+        // Same-token rescue within cooldown window must revert.
         _setupGuardianAndDeposit();
-        vault.deposit(address(token2), 50 ether);
 
         vm.prank(guardian_);
         vault.emergencyWithdraw(address(token), 90, "first");
 
-        // Immediately attempt second withdrawal — should hit cooldown
+        // Re-deposit the same token so balance > 0
+        vault.deposit(address(token), 100 ether);
+
+        // Same token, same block → per-token cooldown active → revert
         vm.prank(guardian_);
         vm.expectRevert();
-        vault.emergencyWithdraw(address(token2), 90, "second");
+        vault.emergencyWithdraw(address(token), 90, "second");
+    }
+
+    function test_cooldown_perTokenAllowsDifferentTokenInSameBlock() public {
+        // Per-token cooldown means rescuing token A does NOT block rescuing token B.
+        _setupGuardianAndDeposit();
+        vault.deposit(address(token2), 50 ether);
+
+        vm.prank(guardian_);
+        vault.emergencyWithdraw(address(token), 90, "first A");
+
+        // Different token, same block → per-token cooldown for B is fresh → succeeds
+        vm.prank(guardian_);
+        vault.emergencyWithdraw(address(token2), 90, "second B");
+        assertEq(vault.getBalance(address(token2)), 0);
     }
 
     function test_cooldown_allowsWithdrawAfterCooldown() public {
         _setupGuardianAndDeposit();
-        vault.deposit(address(token2), 50 ether);
 
         vm.prank(guardian_);
         vault.emergencyWithdraw(address(token), 90, "first");
 
-        // Advance past cooldown (default 10 blocks)
+        // Re-deposit the same token, then advance past cooldown (default 10 blocks)
+        vault.deposit(address(token), 100 ether);
         vm.roll(block.number + 11);
 
+        // Same token, after per-token cooldown expires → succeeds
         vm.prank(guardian_);
-        vault.emergencyWithdraw(address(token2), 90, "second");
-        assertEq(vault.getBalance(address(token2)), 0);
+        vault.emergencyWithdraw(address(token), 90, "second");
+        assertEq(vault.getBalance(address(token)), 0);
     }
 
     function test_isCooldownActive_falseInitially() public view {
         assertFalse(vault.isCooldownActive());
     }
 
-    function test_isCooldownActive_trueAfterEmergencyWithdraw() public {
+    function test_isCooldownActive_globalNotTriggeredBySingleWithdraw() public {
+        // Single-token emergencyWithdraw does NOT touch global cooldown anymore.
+        // Global cooldown is reserved for emergencyWithdrawAll.
         _setupGuardianAndDeposit();
         vm.prank(guardian_);
         vault.emergencyWithdraw(address(token), 90, "hack");
-        assertTrue(vault.isCooldownActive());
+        assertFalse(vault.isCooldownActive(), "global cooldown must NOT activate after single emergencyWithdraw");
+    }
+
+    function test_isCooldownActive_trueAfterEmergencyWithdrawAll() public {
+        // Global cooldown only activates via emergencyWithdrawAll.
+        _setupGuardianAndDeposit();
+        vm.prank(guardian_);
+        vault.emergencyWithdrawAll(95, "rescue all");
+        assertTrue(vault.isCooldownActive(), "global cooldown must activate after emergencyWithdrawAll");
+    }
+
+    function test_isCooldownActiveForToken_trueAfterSingleWithdraw() public {
+        // Per-token cooldown view reflects single-rescue cooldown correctly.
+        _setupGuardianAndDeposit();
+        vm.prank(guardian_);
+        vault.emergencyWithdraw(address(token), 90, "hack");
+        assertTrue(vault.isCooldownActiveForToken(address(token)), "per-token cooldown must activate");
     }
 
     function test_isCooldownActive_falseAfterCooldownExpires() public {
         _setupGuardianAndDeposit();
         vm.prank(guardian_);
-        vault.emergencyWithdraw(address(token), 90, "hack");
+        vault.emergencyWithdrawAll(95, "rescue all"); // triggers global
         vm.roll(block.number + 11);
         assertFalse(vault.isCooldownActive());
     }

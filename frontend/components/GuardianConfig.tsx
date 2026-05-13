@@ -3,30 +3,36 @@
 import { useState } from "react";
 import { isAddress } from "viem";
 import { useReadContract, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
-import { VAULT_ABI, VAULT_ADDRESS, IS_CONFIGURED } from "@/lib/contracts";
+import { VAULT_ABI, IS_CONFIGURED } from "@/lib/contracts";
+import { useVault } from "@/lib/VaultContext";
 
 export function GuardianConfig() {
+  const { selectedVault } = useVault();
+  const enabled = !!selectedVault;
   const [guardianAddr, setGuardianAddr] = useState("");
   const [thresholdValue, setThresholdValue] = useState("");
   const [safeAddr, setSafeAddr] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const { data: currentGuardian } = useReadContract({
-    address: VAULT_ADDRESS,
+    address: selectedVault ?? undefined,
     abi: VAULT_ABI,
     functionName: "guardian",
+    query: { enabled },
   });
 
   const { data: currentThreshold } = useReadContract({
-    address: VAULT_ADDRESS,
+    address: selectedVault ?? undefined,
     abi: VAULT_ABI,
     functionName: "threshold",
+    query: { enabled },
   });
 
   const { data: currentSafe } = useReadContract({
-    address: VAULT_ADDRESS,
+    address: selectedVault ?? undefined,
     abi: VAULT_ABI,
     functionName: "safeAddress",
+    query: { enabled },
   });
 
   const { data: guardianHash, writeContract: writeGuardian, isPending: guardianPending } = useWriteContract();
@@ -53,12 +59,13 @@ export function GuardianConfig() {
 
   function handleSetGuardian() {
     setError(null);
+    if (!selectedVault) { setError("No vault selected"); return; }
     if (!isAddress(guardianAddr)) {
       setError("Invalid guardian address");
       return;
     }
     writeGuardian({
-      address: VAULT_ADDRESS,
+      address: selectedVault!,
       abi: VAULT_ABI,
       functionName: "setGuardian",
       args: [guardianAddr as `0x${string}`],
@@ -67,6 +74,7 @@ export function GuardianConfig() {
 
   function handleSetThreshold() {
     setError(null);
+    if (!selectedVault) { setError("No vault selected"); return; }
     const num = Number(thresholdValue);
     if (isNaN(num) || num < 1 || num > 100 || !Number.isInteger(num)) {
       setError("Threshold must be an integer between 1 and 100");
@@ -74,7 +82,7 @@ export function GuardianConfig() {
     }
     try {
       writeThreshold({
-        address: VAULT_ADDRESS,
+        address: selectedVault!,
         abi: VAULT_ABI,
         functionName: "setThreshold",
         args: [BigInt(num)],
@@ -86,12 +94,13 @@ export function GuardianConfig() {
 
   function handleSetSafe() {
     setError(null);
+    if (!selectedVault) { setError("No vault selected"); return; }
     if (!isAddress(safeAddr)) {
       setError("Invalid safe address");
       return;
     }
     writeSafe({
-      address: VAULT_ADDRESS,
+      address: selectedVault!,
       abi: VAULT_ABI,
       functionName: "setSafeAddress",
       args: [safeAddr as `0x${string}`],
@@ -127,8 +136,8 @@ export function GuardianConfig() {
           />
           <button
             onClick={handleSetGuardian}
-            disabled={!IS_CONFIGURED || guardianPending || !guardianAddr || !isValidGuardian}
-            title={!IS_CONFIGURED ? "Contract addresses not configured" : undefined}
+            disabled={!IS_CONFIGURED || !selectedVault || guardianPending || !guardianAddr || !isValidGuardian}
+            title={!IS_CONFIGURED ? "Contract addresses not configured" : !selectedVault ? "Connect your wallet and select a vault" : undefined}
             className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
           >
             {guardianPending ? "..." : "Set"}
@@ -148,12 +157,12 @@ export function GuardianConfig() {
             <button
               onClick={() =>
                 writeRemove({
-                  address: VAULT_ADDRESS,
+                  address: selectedVault!,
                   abi: VAULT_ABI,
                   functionName: "removeGuardian",
                 })
               }
-              disabled={!IS_CONFIGURED || removePending}
+              disabled={!IS_CONFIGURED || !selectedVault || removePending}
               className="text-xs text-red-400 hover:text-red-300 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {removePending ? "Removing..." : "Remove Guardian"}
@@ -187,7 +196,7 @@ export function GuardianConfig() {
           />
           <button
             onClick={handleSetThreshold}
-            disabled={!IS_CONFIGURED || thresholdPending || !thresholdValue || !isValidThreshold}
+            disabled={!IS_CONFIGURED || !selectedVault || thresholdPending || !thresholdValue || !isValidThreshold}
             title={!IS_CONFIGURED ? "Contract addresses not configured" : undefined}
             className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-700 hover:bg-gray-600 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
@@ -224,7 +233,7 @@ export function GuardianConfig() {
           />
           <button
             onClick={handleSetSafe}
-            disabled={!IS_CONFIGURED || safePending || !safeAddr || !isValidSafe}
+            disabled={!IS_CONFIGURED || !selectedVault || safePending || !safeAddr || !isValidSafe}
             title={!IS_CONFIGURED ? "Contract addresses not configured" : undefined}
             className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-700 hover:bg-gray-600 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >

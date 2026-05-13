@@ -153,13 +153,17 @@ contract SentinelVaultInvariantTest is Test {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // INVARIANT 6 — OWNER IMMUTABILITY
-    // SentinelVault has no transferOwnership function. The owner set in
-    // the constructor must never change.
+    // INVARIANT 6 — OWNER ONLY CHANGES VIA TWO-STEP TRANSFER
+    // SentinelVault supports `transferOwnership` + `acceptOwnership`
+    // (Ownable2Step pattern). Since the handler does NOT call either of
+    // these functions, the owner set in `setUp()` must remain unchanged
+    // across the entire fuzz campaign — proving that no other code path
+    // can mutate the owner.
     // ═══════════════════════════════════════════════════════════════════════
 
-    function invariant_ownerNeverChanges() public view {
-        assertEq(vault.owner(), owner, "Owner changed - should be immutable");
+    function invariant_ownerOnlyChangesViaTwoStepTransfer() public view {
+        assertEq(vault.owner(), owner, "Owner changed without explicit two-step transfer");
+        assertEq(vault.pendingOwner(), address(0), "pendingOwner set without handler invocation");
     }
 
     // ═══════════════════════════════════════════════════════════════════════

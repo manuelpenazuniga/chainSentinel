@@ -123,10 +123,27 @@ export interface AgentConfig {
   llmTimeoutMs: number;
   telegramBotToken?: string;
   telegramChatId?: string;
+  /** Discord webhook URL (no auth required, just the URL). */
+  discordWebhookUrl?: string;
+  /** Slack incoming-webhook URL. */
+  slackWebhookUrl?: string;
+  /** PagerDuty Events API v2 routing key (32-char hex). */
+  pagerDutyRoutingKey?: string;
+  /**
+   * Minimum threat score (0-100) for PagerDuty pages — only EMERGENCY-tier
+   * events should wake oncall. Default: 70.
+   */
+  pagerDutyMinScore: number;
   /** SentinelHeartbeat contract address — when set, the agent pings every heartbeatIntervalBlocks. */
   heartbeatAddress?: string;
   /** Blocks between heartbeat pings (default: 50 ~= 5 min at 6s/block). */
   heartbeatIntervalBlocks: number;
+  /** Path to the SQLite file used for context persistence. Set to empty/undefined to disable. */
+  persistenceDbPath?: string;
+  /** Blocks between context snapshots (default: 100). Ignored when persistence is disabled. */
+  persistenceFlushBlocks: number;
+  /** TCP port for the Prometheus metrics server. Default: 9090. Set to 0 to disable. */
+  metricsPort: number;
 }
 
 // ─── Alert Data ───

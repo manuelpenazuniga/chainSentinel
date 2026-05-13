@@ -1,0 +1,51 @@
+# =============================================================================
+# Dockerignore — keep the build context small and reproducible
+# =============================================================================
+# Anything matched here is excluded from the `docker build` context, which:
+#   - Speeds up the build (less data sent to the daemon)
+#   - Prevents accidentally baking secrets into layers (.env, *.key)
+#   - Eliminates platform-specific noise (already-built node_modules, dist)
+
+# Node deps (will be installed inside the builder stage)
+node_modules
+npm-debug.log
+yarn-error.log
+
+# Build output (regenerated inside the builder)
+dist
+*.tsbuildinfo
+
+# Tests (not needed at runtime — saves a few KB)
+test
+*.test.ts
+vitest.config.*
+coverage
+
+# Local env / secrets — NEVER bake these into the image
+.env
+.env.*
+*.local
+*.key
+*.pem
+
+# Local persistence (the SQLite DB grows over time; we don't ship it)
+*.db
+*.db-journal
+data/
+
+# Editor / OS junk
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Git metadata
+.git
+.gitignore
+.gitattributes
+
+# Docs and CI inside agent/ (none today, but defense-in-depth)
+*.md
+.dockerignore
+Dockerfile
+docker-compose*.yml

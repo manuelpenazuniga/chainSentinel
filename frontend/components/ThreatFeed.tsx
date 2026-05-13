@@ -1,8 +1,9 @@
 "use client";
 
 import { useReadContract } from "wagmi";
-import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@/lib/contracts";
+import { REGISTRY_ABI } from "@/lib/contracts";
 import { useThreatEvents } from "@/lib/useThreatEvents";
+import { useVault } from "@/lib/VaultContext";
 
 function ScoreBadge({ score }: { score: number }) {
   let color = "bg-gray-700 text-gray-300";
@@ -35,10 +36,11 @@ function AttackTypeBadge({ type }: { type: string }) {
 }
 
 export function ThreatFeed() {
+  const { registryAddress } = useVault();
   const { events: reportList, isLoading } = useThreatEvents();
 
   const { data: totalReports } = useReadContract({
-    address: REGISTRY_ADDRESS,
+    address: registryAddress,
     abi: REGISTRY_ABI,
     functionName: "totalReports",
   });

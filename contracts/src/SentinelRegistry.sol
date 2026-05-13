@@ -78,6 +78,22 @@ contract SentinelRegistry {
     /// @notice Aggregate score threshold for auto-blacklisting
     uint256 public constant BLACKLIST_THRESHOLD = 90;
 
+    /// @notice Reports older than `reportTTL` blocks are excluded from
+    ///         recomputed aggregate scores and from `getThreatScoreFresh`.
+    /// @dev    Default `0` disables the TTL (full backward compatibility:
+    ///         all reports always count). Set via `setReportTTL`.
+    ///
+    ///         The TTL is NOT enforced inside `reportThreat` — that path keeps
+    ///         the running average for cheapness and predictable gas. To make
+    ///         expired reports actually drop out of the aggregate stored on
+    ///         chain, anyone can call `recomputeAggregateScore(contractAddress)`.
+    ///
+    ///         Suggested values (Polkadot Hub ~6s/block):
+    ///           7 days  ≈  100,800 blocks
+    ///           30 days ≈  432,000 blocks
+    ///           90 days ≈ 1,296,000 blocks
+    uint256 public reportTTL;
+
     // ─── Events ───
 
     event ThreatReported(
@@ -100,6 +116,22 @@ contract SentinelRegistry {
         bytes4 functionSelector,
         string escalationLevel
     );
+
+    /// @notice Emitted when the TTL is updated (in blocks; 0 = disabled).
+    event ReportTTLUpdated(uint256 newTTL);
+
+    /// @notice Emitted when `recomputeAggregateScore` updates a contract's stored aggregate.
+    event AggregateScoreRecomputed(
+        address indexed contractAddress,
+        uint256 previousScore,
+        uint256 newScore,
+        uint256 freshReportCount,
+        bool blacklistChanged
+    );
+
+    /// @notice Emitted when `recomputeAggregateScore` removes a contract from the blacklist
+    ///         because its fresh aggregate dropped below `BLACKLIST_THRESHOLD`.
+    event ContractUnblacklisted(address indexed contractAddress, uint256 aggregateScore);
 
     // ─── Errors ───
 
@@ -381,5 +413,102 @@ contract SentinelRegistry {
     /// @return The number of playbooks submitted for this contract
     function getPlaybookCount(address contractAddress) external view returns (uint256) {
         return _playbooksByContract[contractAddress].length;
+    }
+
+    // ─── TTL & Recompute (§2.6 of mejoras-tecnicas.md) ───────────────────
+
+    /// @notice Set the report TTL in blocks. Reports older than this are
+    ///         excluded from `getThreatScoreFresh` and `recomputeAggregateScore`.
+    ///         Pass `0` to disable the TTL (all reports always count).
+    function setReportTTL(uint256 newTTL) external onlyOwner {
+        reportTTL = newTTL;
+        emit ReportTTLUpdated(newTTL);
+    }
+
+    /// @notice Whether a given report is still considered "fresh" under the
+    ///         current TTL setting.
+    /// @dev    With `reportTTL == 0`, every report is fresh (no expiry).
+    function _isReportFresh(ThreatReport storage report) internal view returns (bool) {
+        uint256 ttl = reportTTL;
+        if (ttl == 0) return true;
+        return report.blockNumber + ttl >= block.number;
+    }
+
+    /// @notice Compute the aggregate score considering only non-expired reports.
+    /// @dev    Returns 0 when no fresh reports exist. View-only — does NOT mutate
+    ///         storage. Use `recomputeAggregateScore` to persist this value
+    ///         (and update blacklist status).
+    /// @return aggregate     Average of fresh report scores (0-100)
+    /// @return freshCount    Number of fresh reports that contributed to the aggregate
+    /// @return totalCount    Total number of reports for this contract (fresh + expired)
+    function getThreatScoreFresh(address contractAddress)
+        public
+        view
+        returns (uint256 aggregate, uint256 freshCount, uint256 totalCount)
+    {
+        ThreatReport[] storage allReports = _reportsByContract[contractAddress];
+        totalCount = allReports.length;
+        if (totalCount == 0) return (0, 0, 0);
+
+        // Fast path: TTL disabled → return stored aggregate, all reports are fresh.
+        if (reportTTL == 0) {
+            return (aggregateScore[contractAddress], totalCount, totalCount);
+        }
+
+        uint256 sum;
+        for (uint256 i = 0; i < totalCount; i++) {
+            if (_isReportFresh(allReports[i])) {
+                sum += allReports[i].threatScore;
+                freshCount++;
+            }
+        }
+        aggregate = freshCount == 0 ? 0 : sum / freshCount;
+    }
+
+    /// @notice Recompute and persist the aggregate score from non-expired reports only.
+    /// @dev    Anyone can call (gas paid by the caller). Updates `aggregateScore`
+    ///         and self-corrects the blacklist:
+    ///           - Above BLACKLIST_THRESHOLD AND not currently blacklisted → blacklist.
+    ///           - Below BLACKLIST_THRESHOLD AND currently blacklisted    → unblacklist.
+    ///         Useful when a TTL is enabled and old reports should stop counting.
+    function recomputeAggregateScore(address contractAddress) external {
+        if (contractAddress == address(0)) revert ZeroAddress();
+
+        (uint256 fresh,,) = getThreatScoreFresh(contractAddress);
+        uint256 previous = aggregateScore[contractAddress];
+
+        bool wasBlacklisted = blacklisted[contractAddress];
+        bool nowBlacklisted = wasBlacklisted;
+
+        aggregateScore[contractAddress] = fresh;
+
+        if (fresh >= BLACKLIST_THRESHOLD && !wasBlacklisted) {
+            blacklisted[contractAddress] = true;
+            nowBlacklisted = true;
+            emit ContractBlacklisted(contractAddress, fresh);
+        } else if (fresh < BLACKLIST_THRESHOLD && wasBlacklisted) {
+            blacklisted[contractAddress] = false;
+            nowBlacklisted = false;
+            emit ContractUnblacklisted(contractAddress, fresh);
+        }
+
+        emit AggregateScoreRecomputed(
+            contractAddress,
+            previous,
+            fresh,
+            // freshCount available via second call; return-arg coupling acceptable
+            _countFreshReports(contractAddress),
+            wasBlacklisted != nowBlacklisted
+        );
+    }
+
+    /// @notice Internal helper: count non-expired reports for a contract.
+    function _countFreshReports(address contractAddress) internal view returns (uint256 count) {
+        ThreatReport[] storage allReports = _reportsByContract[contractAddress];
+        uint256 ttl = reportTTL;
+        if (ttl == 0) return allReports.length;
+        for (uint256 i = 0; i < allReports.length; i++) {
+            if (_isReportFresh(allReports[i])) count++;
+        }
     }
 }

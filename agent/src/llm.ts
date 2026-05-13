@@ -19,6 +19,7 @@
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { TransactionData, HeuristicResult, LLMAnalysis, MonitorContextInterface } from "./types.js";
+import { llmCalls, llmCallSeconds, llmFailures } from "./metrics.js";
 import { createLogger } from "./logger.js";
 import { ethers } from "ethers";
 
@@ -276,6 +277,9 @@ export async function analyzeThreatWithLLM(
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
+  llmCalls.inc();
+  const stopTimer = llmCallSeconds.startTimer();
+
   try {
     const result = await model.generateContent(
       { contents: [{ role: "user", parts: [{ text: prompt }] }] },
@@ -287,7 +291,13 @@ export async function analyzeThreatWithLLM(
     const rawText = result.response.text().replace(/```json\s*|```\s*/g, "").trim();
     logger.debug(`LLM raw response (first 400 chars): ${rawText.slice(0, 400)}`);
 
-    const analysis: LLMAnalysis = JSON.parse(rawText);
+    let analysis: LLMAnalysis;
+    try {
+      analysis = JSON.parse(rawText);
+    } catch (parseErr) {
+      llmFailures.inc({ reason: "parse_error" });
+      throw parseErr;
+    }
 
     // Validate required numeric fields
     if (
@@ -298,6 +308,7 @@ export async function analyzeThreatWithLLM(
       analysis.confidence < 0 ||
       analysis.confidence > 100
     ) {
+      llmFailures.inc({ reason: "invalid_response" });
       throw new Error(
         `Invalid LLM response values: score=${analysis.threatScore}, confidence=${analysis.confidence}`
       );
@@ -318,11 +329,19 @@ export async function analyzeThreatWithLLM(
     clearTimeout(timeoutId);
 
     if (error instanceof Error && error.name === "AbortError") {
+      llmFailures.inc({ reason: "timeout" });
       logger.warn(`LLM analysis timed out after ${timeoutMs}ms for tx ${tx.hash}`);
     } else {
+      // Don't double-count parse_error / invalid_response — they were already counted above.
+      const msg = (error as Error).message ?? "";
+      if (!msg.includes("Invalid LLM response values") && !(error instanceof SyntaxError)) {
+        llmFailures.inc({ reason: "api_error" });
+      }
       logger.error(`LLM analysis failed for tx ${tx.hash}:`, error);
     }
 
     throw error;
+  } finally {
+    stopTimer();
   }
 }

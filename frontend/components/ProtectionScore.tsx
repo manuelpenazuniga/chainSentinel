@@ -1,21 +1,26 @@
 "use client";
 
 import { useReadContract } from "wagmi";
-import { VAULT_ABI, VAULT_ADDRESS, NATIVE_TOKEN } from "@/lib/contracts";
-import { formatEther } from "viem";
+import { VAULT_ABI, NATIVE_TOKEN } from "@/lib/contracts";
+import { useVault } from "@/lib/VaultContext";
 
 export function ProtectionScore() {
+  const { selectedVault } = useVault();
+  const enabled = !!selectedVault;
+
   const { data: status } = useReadContract({
-    address: VAULT_ADDRESS,
+    address: selectedVault ?? undefined,
     abi: VAULT_ABI,
     functionName: "getVaultStatus",
+    query: { enabled },
   });
 
   const { data: nativeBalance } = useReadContract({
-    address: VAULT_ADDRESS,
+    address: selectedVault ?? undefined,
     abi: VAULT_ABI,
     functionName: "getBalance",
     args: [NATIVE_TOKEN],
+    query: { enabled },
   });
 
   const [, guardian, safeAddress, threshold, , , ,isProtected] = status || [];

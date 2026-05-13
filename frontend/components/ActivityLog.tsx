@@ -1,7 +1,8 @@
 "use client";
 
 import { useReadContract } from "wagmi";
-import { VAULT_ABI, VAULT_ADDRESS } from "@/lib/contracts";
+import { VAULT_ABI } from "@/lib/contracts";
+import { useVault } from "@/lib/VaultContext";
 
 const eventIcons: Record<string, { icon: string; color: string }> = {
   deposit: { icon: "+", color: "text-emerald-400 bg-emerald-500/10" },
@@ -18,10 +19,13 @@ interface ActivityEvent {
 }
 
 export function ActivityLog() {
+  const { selectedVault } = useVault();
+
   const { data: status } = useReadContract({
-    address: VAULT_ADDRESS,
+    address: selectedVault ?? undefined,
     abi: VAULT_ABI,
     functionName: "getVaultStatus",
+    query: { enabled: !!selectedVault },
   });
 
   const lastEmergencyBlock = status?.[5] ? Number(status[5]) : 0;

@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useReadContract } from "wagmi";
-import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@/lib/contracts";
+import { REGISTRY_ABI } from "@/lib/contracts";
+import { useVault } from "@/lib/VaultContext";
 
 interface ThreatReport {
   reporter: string;
@@ -28,6 +29,7 @@ function ScoreBadge({ score }: { score: number }) {
 }
 
 export default function RegistryPage() {
+  const { registryAddress } = useVault();
   const [searchAddress, setSearchAddress] = useState("");
   const [queryAddress, setQueryAddress] = useState<`0x${string}` | "">("");
   const [page, setPage] = useState(0);
@@ -36,13 +38,13 @@ export default function RegistryPage() {
   const isValidAddress = queryAddress.length === 42 && queryAddress.startsWith("0x");
 
   const { data: totalReports } = useReadContract({
-    address: REGISTRY_ADDRESS,
+    address: registryAddress,
     abi: REGISTRY_ABI,
     functionName: "totalReports",
   });
 
   const { data: threatScore } = useReadContract({
-    address: REGISTRY_ADDRESS,
+    address: registryAddress,
     abi: REGISTRY_ABI,
     functionName: "getThreatScore",
     args: isValidAddress ? [queryAddress as `0x${string}`] : undefined,
@@ -50,7 +52,7 @@ export default function RegistryPage() {
   });
 
   const { data: isBlacklisted } = useReadContract({
-    address: REGISTRY_ADDRESS,
+    address: registryAddress,
     abi: REGISTRY_ABI,
     functionName: "isBlacklisted",
     args: isValidAddress ? [queryAddress as `0x${string}`] : undefined,
@@ -58,7 +60,7 @@ export default function RegistryPage() {
   });
 
   const { data: reportCount } = useReadContract({
-    address: REGISTRY_ADDRESS,
+    address: registryAddress,
     abi: REGISTRY_ABI,
     functionName: "getReportCount",
     args: isValidAddress ? [queryAddress as `0x${string}`] : undefined,
@@ -66,7 +68,7 @@ export default function RegistryPage() {
   });
 
   const { data: reports, isLoading: reportsLoading } = useReadContract({
-    address: REGISTRY_ADDRESS,
+    address: registryAddress,
     abi: REGISTRY_ABI,
     functionName: "getReports",
     args: isValidAddress

@@ -415,6 +415,73 @@ export class MonitorContext implements MonitorContextInterface {
     }
   }
 
+  // ─── Persistence (§3.2) ────────────────────────────────────────────────
+  //
+  // Snapshot the whole rolling state so the agent can recover quickly after
+  // a restart instead of needing 100+ blocks of fresh observations to rebuild
+  // the averages. BigInts are serialized as decimal strings (CircularBuffer is
+  // dumped as an array). The schema version lets us evolve the format safely.
+
+  /** Schema version for the snapshot format. Bump when changing layout. */
+  static readonly SNAPSHOT_VERSION = 1;
+
+  /**
+   * Produce a JSON-serializable snapshot of the rolling state. Does NOT
+   * include the provider, registry address, or vault address — those come
+   * from configuration on restart.
+   */
+  toSnapshot(): ContextSnapshot {
+    return {
+      version: MonitorContext.SNAPSHOT_VERSION,
+      currentBlock: this.currentBlock,
+      avgValues: serializeBigIntCountMap(this.avgValues),
+      avgERC20Values: serializeBigIntCountMap(this.avgERC20Values),
+      contractAges: Object.fromEntries(this.contractAges),
+      balanceCache: serializeBalanceCache(this.balanceCache),
+      interactionHistory: [...this.interactionHistory],
+      contractLabels: Object.fromEntries(this.contractLabels),
+      flashLoanTxHashes: [...this.flashLoanTxHashes],
+      whitelistedContracts: [...this.whitelistedContracts],
+      blacklist: [...this.blacklist],
+      recentTxBuffer: this.recentTxBuffer.toArray(),
+    };
+  }
+
+  /**
+   * Restore in-memory state from a snapshot. Throws on schema mismatch so the
+   * agent can decide to discard and start cold rather than misinterpret data.
+   */
+  restoreFromSnapshot(snapshot: ContextSnapshot): void {
+    if (snapshot.version !== MonitorContext.SNAPSHOT_VERSION) {
+      throw new Error(
+        `Snapshot schema mismatch: expected v${MonitorContext.SNAPSHOT_VERSION}, got v${snapshot.version}`
+      );
+    }
+
+    this.currentBlock = snapshot.currentBlock;
+    this.avgValues = deserializeBigIntCountMap(snapshot.avgValues);
+    this.avgERC20Values = deserializeBigIntCountMap(snapshot.avgERC20Values);
+    this.contractAges = new Map(Object.entries(snapshot.contractAges));
+    this.balanceCache = deserializeBalanceCache(snapshot.balanceCache);
+    this.interactionHistory = new Set(snapshot.interactionHistory);
+    this.contractLabels = new Map(Object.entries(snapshot.contractLabels));
+    this.flashLoanTxHashes = new Set(snapshot.flashLoanTxHashes);
+    this.whitelistedContracts = new Set(snapshot.whitelistedContracts);
+    this.blacklist = new Set(snapshot.blacklist);
+
+    // Rehydrate the CircularBuffer by replaying entries (preserves insertion order).
+    for (const tx of snapshot.recentTxBuffer) {
+      this.recentTxBuffer.push(tx);
+    }
+
+    logger.info(
+      `Context restored from snapshot at block ${snapshot.currentBlock}: ` +
+        `${this.avgValues.size} avg(native), ${this.avgERC20Values.size} avg(erc20), ` +
+        `${this.contractAges.size} ages, ${this.blacklist.size} blacklist, ` +
+        `${this.recentTxBuffer.size} recent txs`
+    );
+  }
+
   private async refreshWhitelistFromVault(): Promise<void> {
     if (!this.vaultAddress || this.vaultAddress === "0x") return;
 
@@ -461,4 +528,72 @@ export class MonitorContext implements MonitorContextInterface {
       logger.warn("Failed to refresh whitelist from vault:", error);
     }
   }
+}
+
+// ─── Snapshot Types & Serialization Helpers ────────────────────────────────
+
+/** Serialized form of `{ total: bigint; count: number }`. */
+interface BigIntCountEntry {
+  total: string; // bigint as decimal string
+  count: number;
+}
+
+/** JSON-serializable snapshot of MonitorContext rolling state. */
+export interface ContextSnapshot {
+  version: number;
+  currentBlock: number;
+  avgValues: Record<string, BigIntCountEntry>;
+  avgERC20Values: Record<string, BigIntCountEntry>;
+  contractAges: Record<string, number>;
+  balanceCache: Record<string, Record<string, string>>; // addr → { blockNumber → balanceString }
+  interactionHistory: string[];
+  contractLabels: Record<string, string>;
+  flashLoanTxHashes: string[];
+  whitelistedContracts: string[];
+  blacklist: string[];
+  recentTxBuffer: TransactionData[];
+}
+
+function serializeBigIntCountMap(
+  map: Map<string, { total: bigint; count: number }>
+): Record<string, BigIntCountEntry> {
+  const out: Record<string, BigIntCountEntry> = {};
+  for (const [k, v] of map) out[k] = { total: v.total.toString(), count: v.count };
+  return out;
+}
+
+function deserializeBigIntCountMap(
+  obj: Record<string, BigIntCountEntry>
+): Map<string, { total: bigint; count: number }> {
+  const m = new Map<string, { total: bigint; count: number }>();
+  for (const [k, v] of Object.entries(obj)) {
+    m.set(k, { total: BigInt(v.total), count: v.count });
+  }
+  return m;
+}
+
+function serializeBalanceCache(
+  cache: Map<string, Map<number, bigint>>
+): Record<string, Record<string, string>> {
+  const out: Record<string, Record<string, string>> = {};
+  for (const [addr, perBlock] of cache) {
+    const inner: Record<string, string> = {};
+    for (const [block, bal] of perBlock) inner[block.toString()] = bal.toString();
+    out[addr] = inner;
+  }
+  return out;
+}
+
+function deserializeBalanceCache(
+  obj: Record<string, Record<string, string>>
+): Map<string, Map<number, bigint>> {
+  const m = new Map<string, Map<number, bigint>>();
+  for (const [addr, perBlock] of Object.entries(obj)) {
+    const inner = new Map<number, bigint>();
+    for (const [block, bal] of Object.entries(perBlock)) {
+      inner.set(Number(block), BigInt(bal));
+    }
+    m.set(addr, inner);
+  }
+  return m;
 }

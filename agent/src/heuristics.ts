@@ -20,6 +20,7 @@
 // ============================================================================
 
 import { HeuristicRule, HeuristicResult, TransactionData, MonitorContextInterface } from "./types.js";
+import { heuristicTriggered } from "./metrics.js";
 import { createLogger } from "./logger.js";
 
 const logger = createLogger("heuristics");
@@ -497,6 +498,7 @@ export function calculateHeuristicScore(
       if (triggered) {
         totalScore += rule.score;
         triggeredRules.push(rule.name);
+        heuristicTriggered.inc({ rule: rule.name });
         logger.debug(`Rule ${rule.name} triggered (+${rule.score}) for tx ${tx.hash}`);
       }
     } catch (error) {

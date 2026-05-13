@@ -2,33 +2,66 @@
 
 import { useReadContract } from "wagmi";
 import { formatEther } from "viem";
-import { VAULT_ABI, VAULT_ADDRESS, NATIVE_TOKEN } from "@/lib/contracts";
+import { VAULT_ABI, NATIVE_TOKEN } from "@/lib/contracts";
+import { useVault } from "@/lib/VaultContext";
+import { DataState } from "./DataState";
 
 export function VaultStatus() {
-  const { data: status, isLoading } = useReadContract({
-    address: VAULT_ADDRESS,
+  const { selectedVault } = useVault();
+  const enabled = !!selectedVault;
+
+  const { data: status, isLoading: loadingStatus, error: statusError, refetch: refetchStatus } = useReadContract({
+    address: selectedVault ?? undefined,
     abi: VAULT_ABI,
     functionName: "getVaultStatus",
+    query: { enabled },
   });
 
-  const { data: nativeBalance } = useReadContract({
-    address: VAULT_ADDRESS,
+  const { data: nativeBalance, isLoading: loadingBalance, refetch: refetchBalance } = useReadContract({
+    address: selectedVault ?? undefined,
     abi: VAULT_ABI,
     functionName: "getBalance",
     args: [NATIVE_TOKEN],
+    query: { enabled },
   });
 
-  if (isLoading) {
+  const isLoading = enabled && (loadingStatus || loadingBalance);
+  const error = (statusError as Error | null) ?? null;
+
+  if (!selectedVault) {
     return (
-      <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-6 animate-pulse">
-        <div className="h-6 bg-gray-800 rounded w-1/3 mb-4" />
-        <div className="h-12 bg-gray-800 rounded w-1/2 mb-6" />
-        <div className="grid grid-cols-2 gap-4">
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="h-16 bg-gray-800 rounded" />
-          ))}
-        </div>
-      </div>
+      <DataState
+        empty
+        emptyMessage="No vault selected — connect your wallet and pick one from the navbar."
+      >
+        <div />
+      </DataState>
+    );
+  }
+
+  if (isLoading || error) {
+    return (
+      <DataState
+        loading={isLoading}
+        error={error}
+        onRetry={() => {
+          void refetchStatus();
+          void refetchBalance();
+        }}
+        loadingFallback={
+          <div className="rounded-xl border border-gray-800 bg-gray-900/50 p-6 animate-pulse">
+            <div className="h-6 bg-gray-800 rounded w-1/3 mb-4" />
+            <div className="h-12 bg-gray-800 rounded w-1/2 mb-6" />
+            <div className="grid grid-cols-2 gap-4">
+              {[...Array(4)].map((_, i) => (
+                <div key={i} className="h-16 bg-gray-800 rounded" />
+              ))}
+            </div>
+          </div>
+        }
+      >
+        <div />
+      </DataState>
     );
   }
 

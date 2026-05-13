@@ -3,17 +3,20 @@
 import { useState } from "react";
 import { parseEther, formatEther } from "viem";
 import { useReadContract, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
-import { VAULT_ABI, VAULT_ADDRESS, NATIVE_TOKEN } from "@/lib/contracts";
+import { VAULT_ABI, NATIVE_TOKEN } from "@/lib/contracts";
+import { useVault } from "@/lib/VaultContext";
 
 export function WithdrawForm() {
+  const { selectedVault } = useVault();
   const [amount, setAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const { data: balance } = useReadContract({
-    address: VAULT_ADDRESS,
+    address: selectedVault ?? undefined,
     abi: VAULT_ABI,
     functionName: "getBalance",
     args: [NATIVE_TOKEN],
+    query: { enabled: !!selectedVault },
   });
 
   const { data: hash, writeContract, isPending } = useWriteContract();
@@ -27,6 +30,10 @@ export function WithdrawForm() {
     e.preventDefault();
     setError(null);
     if (!amount || parseFloat(amount) <= 0) return;
+    if (!selectedVault) {
+      setError("No vault selected");
+      return;
+    }
 
     try {
       const value = parseEther(amount);
@@ -35,7 +42,7 @@ export function WithdrawForm() {
         return;
       }
       writeContract({
-        address: VAULT_ADDRESS,
+        address: selectedVault,
         abi: VAULT_ABI,
         functionName: "withdraw",
         args: [NATIVE_TOKEN, value],
@@ -78,7 +85,8 @@ export function WithdrawForm() {
 
         <button
           type="submit"
-          disabled={isPending || isConfirming || !amount || parseFloat(amount) <= 0}
+          disabled={!selectedVault || isPending || isConfirming || !amount || parseFloat(amount) <= 0}
+          title={!selectedVault ? "Connect your wallet and select a vault" : undefined}
           className="w-full py-2.5 px-4 rounded-lg font-medium text-sm bg-gray-700 hover:bg-gray-600 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {isPending

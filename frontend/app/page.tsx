@@ -6,7 +6,8 @@ import { ThreatFeed } from "@/components/ThreatFeed";
 import { ThreatChart } from "@/components/ThreatChart";
 import { ProtectionScore } from "@/components/ProtectionScore";
 import { ActivityLog } from "@/components/ActivityLog";
-import { VAULT_ABI, VAULT_ADDRESS, REGISTRY_ABI, REGISTRY_ADDRESS } from "@/lib/contracts";
+import { VAULT_ABI, REGISTRY_ABI } from "@/lib/contracts";
+import { useVault } from "@/lib/VaultContext";
 
 function StatCard({
   label,
@@ -39,15 +40,17 @@ function StatCard({
 
 export default function DashboardPage() {
   const { isConnected } = useAccount();
+  const { selectedVault, registryAddress } = useVault();
 
   const { data: vaultStatus } = useReadContract({
-    address: VAULT_ADDRESS,
+    address: selectedVault ?? undefined,
     abi: VAULT_ABI,
     functionName: "getVaultStatus",
+    query: { enabled: !!selectedVault },
   });
 
   const { data: totalReports } = useReadContract({
-    address: REGISTRY_ADDRESS,
+    address: registryAddress,
     abi: REGISTRY_ABI,
     functionName: "totalReports",
   });
