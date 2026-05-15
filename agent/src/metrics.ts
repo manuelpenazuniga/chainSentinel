@@ -19,7 +19,7 @@
 // lag) under the `chainsentinel_` namespace.
 // ============================================================================
 
-import { Counter, Histogram, Registry, collectDefaultMetrics } from "prom-client";
+import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from "prom-client";
 import { createServer, Server } from "http";
 import { createLogger } from "./logger.js";
 
@@ -94,6 +94,23 @@ export const threatReports = new Counter({
   name: "chainsentinel_threat_reports_total",
   help: "Threat reports published to the registry, by escalation level and outcome",
   labelNames: ["level", "success", "vm"] as const,
+  registers: [registry],
+});
+
+export const lowBalanceAlerts = new Counter({
+  name: "chainsentinel_low_balance_alerts_total",
+  help: "Times the BalanceMonitor fired a low-balance alert (post-cooldown)",
+  registers: [registry],
+});
+
+// ─── Gauges ─────────────────────────────────────────────────────────────────
+//
+// Gauges track values that can go up AND down (in contrast to counters which
+// only increase). The agent's wallet balance is the canonical example.
+
+export const agentBalancePas = new Gauge({
+  name: "chainsentinel_agent_balance_pas",
+  help: "Current balance of the agent's signing wallet, in PAS (1 PAS = 1e18 wei)",
   registers: [registry],
 });
 

@@ -79,12 +79,12 @@ export class MonitorContext implements MonitorContextInterface {
   private flashLoanTxHashes: Set<string> = new Set();
   private whitelistedContracts: Set<string> = new Set();
   private currentBlock: number = 0;
-  private provider: ethers.JsonRpcProvider;
+  private provider: ethers.AbstractProvider;
   private registryAddress: string;
   private vaultAddress: string;
 
   constructor(
-    provider: ethers.JsonRpcProvider,
+    provider: ethers.AbstractProvider,
     registryAddress: string,
     bufferCapacity: number = 500,
     vaultAddress: string = ""

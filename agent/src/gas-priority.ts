@@ -150,10 +150,12 @@ export function computeGasOverrides(
 const FEE_WINDOW_SIZE = 10; // track last 10 blocks
 
 export class GasPriorityEstimator {
-  private provider: ethers.JsonRpcProvider;
+  // Accept any AbstractProvider so a shared FallbackProvider works (§3.4).
+  // Methods used (`getFeeData`) live on AbstractProvider.
+  private provider: ethers.AbstractProvider;
   private recentFees: FeeSnapshot[] = [];
 
-  constructor(provider: ethers.JsonRpcProvider) {
+  constructor(provider: ethers.AbstractProvider) {
     this.provider = provider;
   }
 

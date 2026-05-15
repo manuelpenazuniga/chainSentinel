@@ -81,8 +81,10 @@ export class Executor {
   private targets: VaultTarget[] = [];
   private gasEstimator: GasPriorityEstimator;
 
-  constructor(config: AgentConfig) {
-    const provider = new ethers.JsonRpcProvider(config.rpcUrl, {
+  constructor(config: AgentConfig, sharedProvider?: ethers.AbstractProvider) {
+    // Prefer the shared provider (§3.4 RPC failover); fall back to creating
+    // our own from the legacy single RPC_URL for backward compatibility.
+    const provider = sharedProvider ?? new ethers.JsonRpcProvider(config.rpcUrl, {
       chainId: config.chainId,
       name: "polkadot-hub-testnet",
     });

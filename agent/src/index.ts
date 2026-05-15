@@ -10,6 +10,8 @@ import { XcmMonitor } from "./xcm-monitor.js";
 import { AgentKitWrapper } from "./agentkit.js";
 import { ContextPersistence } from "./persistence.js";
 import { MetricsServer } from "./metrics.js";
+import { BalanceMonitor } from "./balance-monitor.js";
+import { createProvider, parseRpcUrls } from "./rpc.js";
 import { initSentry, flushSentry, captureException } from "./sentry.js";
 import { createLogger } from "./logger.js";
 import { ethers } from "ethers";
@@ -27,6 +29,7 @@ function loadConfig(): AgentConfig {
 
   return {
     rpcUrl: process.env.RPC_URL!,
+    rpcUrls: parseRpcUrls({ RPC_URL: process.env.RPC_URL, RPC_URLS: process.env.RPC_URLS }),
     wsUrl: process.env.WS_URL,
     chainId: parseInt(process.env.CHAIN_ID!),
     agentPrivateKey: process.env.AGENT_PRIVATE_KEY!,
@@ -50,6 +53,9 @@ function loadConfig(): AgentConfig {
     persistenceDbPath: process.env.PERSISTENCE_DB_PATH || undefined,
     persistenceFlushBlocks: parseInt(process.env.PERSISTENCE_FLUSH_BLOCKS || "100"),
     metricsPort: parseInt(process.env.METRICS_PORT || "9090"),
+    minAgentBalancePas: parseFloat(process.env.MIN_AGENT_BALANCE_PAS || "0.5"),
+    balanceCheckIntervalBlocks: parseInt(process.env.BALANCE_CHECK_INTERVAL_BLOCKS || "50"),
+    balanceAlertCooldownMs: parseInt(process.env.BALANCE_ALERT_COOLDOWN_MS || "3600000"),
   };
 }
 
@@ -61,7 +67,6 @@ async function main(): Promise<void> {
   logger.info("=== ChainSentinel Agent Starting ===");
 
   const config = loadConfig();
-  logger.info(`RPC: ${config.rpcUrl}`);
   logger.info(`Chain ID: ${config.chainId}`);
   logger.info(`Vault (REVM): ${config.vaultAddress}`);
   logger.info(`Registry (REVM): ${config.registryAddress}`);
@@ -73,10 +78,11 @@ async function main(): Promise<void> {
   logger.info(`Heuristic threshold: ${config.heuristicThreshold}`);
   logger.info(`Emergency threshold: ${config.emergencyThreshold}`);
 
-  const provider = new ethers.JsonRpcProvider(config.rpcUrl, {
-    chainId: config.chainId,
-    name: "polkadot-hub-testnet",
-  });
+  // ─── Shared RPC provider (§3.4 — failover-aware, single instance) ──────
+  // ONE provider feeds Monitor + Executor + Context + BalanceMonitor +
+  // ContextRefresh. With multiple URLs in RPC_URLS, ethers' FallbackProvider
+  // races them; with a single URL we use a plain JsonRpcProvider — no overhead.
+  const provider = createProvider(config.rpcUrls, config.chainId);
 
   const network = await provider.getNetwork();
   logger.info(`Connected to network: ${network.name} (chainId: ${network.chainId})`);
@@ -85,8 +91,8 @@ async function main(): Promise<void> {
   logger.info(`Current block: ${blockNumber}`);
 
   const context = new MonitorContext(provider, config.registryAddress, 500, config.vaultAddress);
-  const monitor = new Monitor(config, context);
-  const executor = new Executor(config);
+  const monitor = new Monitor(config, context, provider);
+  const executor = new Executor(config, provider);
   const alerter = new Alerter(config);
 
   // Connect the gas estimator so the monitor feeds block fee data to the executor
@@ -155,6 +161,35 @@ async function main(): Promise<void> {
 
   // Connect heartbeat to monitor so it pings on each new block
   monitor.setHeartbeat(heartbeat);
+
+  // ─── Balance Monitor (§3.8) ─────────────────────────────────────────────
+  // The agent pays gas for every emergency withdrawal. If the wallet drains,
+  // those withdrawals revert silently inside executor's catch — we'd only
+  // discover the problem after the first failed rescue. The BalanceMonitor
+  // makes that failure mode loud: AGENT_ERROR alert via every configured
+  // channel (Telegram/Discord/Slack/PagerDuty) and a Prometheus gauge.
+  const balanceWallet = new ethers.Wallet(config.agentPrivateKey);
+  const minBalanceWei = ethers.parseEther(String(config.minAgentBalancePas));
+  const balanceMonitor = new BalanceMonitor(provider, balanceWallet.address, alerter, {
+    minBalanceWei,
+    intervalBlocks: config.balanceCheckIntervalBlocks,
+    alertCooldownMs: config.balanceAlertCooldownMs,
+  });
+
+  // Eager check at startup — surfaces low balance before the first block tick.
+  try {
+    const initialBalance = await balanceMonitor.checkNow();
+    if (initialBalance != null) {
+      logger.info(
+        `Agent balance: ${ethers.formatEther(initialBalance)} PAS ` +
+        `(threshold: ${config.minAgentBalancePas} PAS, ` +
+        `check every ${config.balanceCheckIntervalBlocks} blocks)`
+      );
+    }
+  } catch (err) {
+    logger.warn(`Initial balance check failed (non-fatal): ${(err as Error).message}`);
+  }
+  monitor.setBalanceMonitor(balanceMonitor);
 
   // ─── XCM Monitor (Substrate layer) ──────────────────────────────────────
   let xcmMonitor: XcmMonitor | null = null;

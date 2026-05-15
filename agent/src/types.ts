@@ -106,7 +106,14 @@ export interface MonitorContextInterface {
 // ─── Agent Configuration ───
 
 export interface AgentConfig {
+  /** Legacy single endpoint. Honored when `rpcUrls` is empty. */
   rpcUrl: string;
+  /**
+   * Ordered list of RPC endpoints for failover (§3.4). Index 0 = primary.
+   * When length >= 2, the agent uses ethers `FallbackProvider` with quorum:1.
+   * Empty array = use `rpcUrl` as the only endpoint.
+   */
+  rpcUrls: string[];
   wsUrl?: string;
   chainId: number;
   agentPrivateKey: string;
@@ -144,6 +151,12 @@ export interface AgentConfig {
   persistenceFlushBlocks: number;
   /** TCP port for the Prometheus metrics server. Default: 9090. Set to 0 to disable. */
   metricsPort: number;
+  /** Minimum acceptable agent wallet balance in PAS. Below this, an AGENT_ERROR alert fires. Default: 0.5. */
+  minAgentBalancePas: number;
+  /** Blocks between balance checks (default: 50 ≈ 5 min @ 6s blocks). */
+  balanceCheckIntervalBlocks: number;
+  /** Minimum ms between repeated low-balance alerts (anti-spam). Default: 3600000 (1 h). */
+  balanceAlertCooldownMs: number;
 }
 
 // ─── Alert Data ───

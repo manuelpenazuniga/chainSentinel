@@ -4,6 +4,7 @@ import { MonitorContext } from "./context.js";
 import { GasPriorityEstimator, FeeSnapshot } from "./gas-priority.js";
 import { HeartbeatClient } from "./heartbeat.js";
 import { ContextPersistence } from "./persistence.js";
+import { BalanceMonitor } from "./balance-monitor.js";
 import {
   blocksFetched,
   blocksProcessed,
@@ -72,7 +73,8 @@ interface EnrichedBlock {
  * speedup on cold start.
  */
 export class Monitor {
-  private httpProvider: ethers.JsonRpcProvider;
+  // Accepts any AbstractProvider so a shared FallbackProvider works (§3.4).
+  private httpProvider: ethers.AbstractProvider;
   private context: MonitorContext;
   private isRunning: boolean = false;
   private lastProcessedBlock: number = 0;
@@ -85,15 +87,22 @@ export class Monitor {
   private gasEstimator: GasPriorityEstimator | null = null;
   private heartbeat: HeartbeatClient | null = null;
   private persistence: ContextPersistence | null = null;
+  private balanceMonitor: BalanceMonitor | null = null;
 
-  constructor(config: AgentConfig, context: MonitorContext) {
+  constructor(
+    config: AgentConfig,
+    context: MonitorContext,
+    sharedProvider?: ethers.AbstractProvider
+  ) {
     this.context = context;
     this.pollIntervalMs = parseInt(process.env.POLL_INTERVAL_MS || "6000");
     this.fetchConcurrency = Math.max(
       1,
       parseInt(process.env.FETCH_CONCURRENCY || "3")
     );
-    this.httpProvider = new ethers.JsonRpcProvider(config.rpcUrl, {
+    // Prefer the shared provider (§3.4 RPC failover); fall back to creating
+    // our own from the legacy single RPC_URL for backward compatibility.
+    this.httpProvider = sharedProvider ?? new ethers.JsonRpcProvider(config.rpcUrl, {
       chainId: config.chainId,
       name: "polkadot-hub-testnet",
     });
@@ -112,6 +121,11 @@ export class Monitor {
   /** Connect the persistence layer so context snapshots are written periodically. */
   setPersistence(persistence: ContextPersistence | null): void {
     this.persistence = persistence;
+  }
+
+  /** Connect the balance monitor so the agent wallet is checked every N blocks. */
+  setBalanceMonitor(bm: BalanceMonitor | null): void {
+    this.balanceMonitor = bm;
   }
 
   /** Override the starting block (e.g. after restoring from a snapshot). */
@@ -329,6 +343,11 @@ export class Monitor {
       // Heartbeat ping (best-effort, never blocks the loop).
       if (this.heartbeat) {
         await this.heartbeat.maybePing(enriched.blockNumber);
+      }
+
+      // Balance check (best-effort, throttled by `intervalBlocks` + alert cooldown).
+      if (this.balanceMonitor) {
+        await this.balanceMonitor.maybeCheck(enriched.blockNumber);
       }
 
       // Persistence snapshot (best-effort, runs once per `flushIntervalBlocks`).
